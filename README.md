@@ -1,91 +1,153 @@
-# book_translate — локальный перевод технических книг EN → RU
+# book_translate
 
-Перевод EPUB и PDF локальной моделью (Ollama + translategemma, GPU 4 ГБ) без облака.
-Вся система поднимается одним `docker compose`.
+Локальный перевод технических книг **EPUB и PDF с английского на русский** с помощью локальной LLM.
+Текст никуда не отправляется: модель работает на вашей видеокарте через [Ollama](https://ollama.com).
+Вся система поднимается одним `docker compose` и переводит книгу одной командой.
 
-| Формат | Инструмент | Что сохраняется |
+| Формат | Движок | Что сохраняется |
 |---|---|---|
-| EPUB | [bilingual_book_maker](https://github.com/yihong0618/bilingual_book_maker) + скрипты `scripts/` | код, формулы, списки, сноски, ссылки, подписи, переменные с индексами |
-| PDF  | [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next) + проверка и исправление страниц | вёрстка страниц; код по шрифту |
+| EPUB | [bilingual_book_maker](https://github.com/yihong0618/bilingual_book_maker) + скрипты постобработки | код, формулы (MathML), списки, таблицы, сноски, ссылки, картинки, переменные с индексами |
+| PDF | [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next) (BabelDOC) + проверка и ремонт страниц | вёрстка страниц, код (по моноширинному шрифту), формулы |
+
+Модель по умолчанию — [TranslateGemma 4B](https://ollama.com/library/translategemma), рассчитана на видеокарты от 4 ГБ.
 
 ## Требования
 
-- Windows 11 + Docker Desktop (WSL2), драйвер NVIDIA. Проверка GPU:
-  `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`
-- `C:\Users\<user>\.wslconfig`: `[wsl2]` / `memory=8GB` / `swap=16GB`, затем `wsl --shutdown`.
-- В PowerShell писать `docker.exe` (если в `System32` лежит посторонний файл `docker`).
+- **Видеокарта NVIDIA** с 4+ ГБ видеопамяти и свежим драйвером.
+- **Docker с поддержкой GPU:**
+  - Linux — Docker Engine + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
+  - Windows — Docker Desktop с бэкендом WSL2 (GPU пробрасывается автоматически).
+- **~15 ГБ на диске:** образы (~13 ГБ) и модель (~3 ГБ).
+- **Оперативная память:** от 16 ГБ. В Windows рекомендуется ограничить память WSL, иначе Docker может занять её всю:
+  `%USERPROFILE%\.wslconfig` → `[wsl2]` / `memory=8GB` / `swap=16GB`, затем `wsl --shutdown`.
 
-## Запуск
+Проверка, что GPU доступен в контейнерах:
+```
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+## Установка
 
 ```
-cd C:\book_translate
+git clone https://github.com/<user>/book_translate.git
+cd book_translate
 docker compose up -d
 ```
-Первый раз скачается модель (~3,3 ГБ). Проверка: `docker compose ps -a` — `ollama` healthy,
-`ollama-init` Exited (0); `docker compose logs ollama-init` → «Модель translategemma-gpu готова».
 
-## Перевод EPUB
+При первом запуске скачиваются образы и модель. Готовность:
+```
+docker compose ps -a              # ollama — healthy, ollama-init — Exited (0)
+docker compose logs ollama-init   # «Модель translategemma-gpu готова»
+```
 
-1. Положить книгу в `source\` (например, `geron.epub`).
-2. ```
-   docker compose run --rm translate geron.epub ml,math
-   ```
-   Второй аргумент — области глоссария (см. ниже), по умолчанию только `base`.
-3. Результат в `books\geron\`:
-   - `geron.epub` — оригинал,
-   - `geron_ru.epub` — перевод,
-   - `geron_qa.txt` — отчёт: сверка кода, формул, списков, ссылок с оригиналом.
+## Использование
 
-Если перевод оборвался — повторить ту же команду: он продолжится с места остановки.
-Скорость ~3,5 ч на книгу 700 страниц.
-
-## Перевод PDF
+Положите книгу в папку `source/` и запустите перевод:
 
 ```
-docker compose run --rm translate-pdf java.pdf programming
+docker compose run --rm translate     book.epub [области]
+docker compose run --rm translate-pdf book.pdf  [области]
 ```
-Первый запуск соберёт образ конвейера (pdf2zh + qpdf, pdfplumber — несколько минут).
-Что происходит:
-1. Разбор: шрифт кода определяется сам (Courier, UbuntuMono, *Mono*…), ищутся рекламные строки.
-2. Реклама вырезается из рабочей копии.
-3. Перевод pdf2zh (~25 с/страница, ~5 ч на 700 страниц).
-4. Проверка каждой страницы c оригиналом: потеря кода, русский текст внутри кода, «чужие» строки вместо кода.
-5. Исправление: плохо переведённые страницы переводятся заново короткими прогонами (по 3, затем по 1 странице),
-   берётся лучшая версия. Если код так и не восстановился — после страницы вставляется английский оригинал с подписью.
 
-Результат в `books\java\`: `оригинал.pdf`, `перевод_ru.pdf`, `отчёт_qa.txt`.
-Пробный прогон части книги: `docker compose run --rm -e PAGES=40-60 translate-pdf имя_книги.pdf programming`.
-Оборвалось — повторить ту же команду (готовые абзацы возьмутся из кэша pdf2zh).
+`[области]` — тематические глоссарии через запятую (см. [Глоссарий](#глоссарий)), например `programming` или `ml,math`.
 
-Веб-интерфейс pdf2zh для ручной работы: `docker compose --profile pdf up -d` → http://127.0.0.1:7860
-(настройки — `config/pdf2zh/config.v3.toml`, в интерфейсе не **сохранять**; остановить: `docker compose --profile pdf stop pdf2zh`).
+Результат появится в `books/<имя книги>/`:
+
+| Файл | Что это |
+|---|---|
+| `book.epub` / `book.pdf` | копия оригинала |
+| `book_ru.epub` / `book_ru.pdf` | перевод |
+| `book_qa.txt` | отчёт проверки: сверка кода, формул, разметки с оригиналом, найденные проблемы |
+
+**Пробный прогон** перед переводом всей книги:
+```
+docker compose run --rm -e ONLY=ch04.html translate     book.epub ml,math   # одна глава EPUB
+docker compose run --rm -e PAGES=40-60    translate-pdf book.pdf  programming  # диапазон страниц PDF
+```
+Имена файлов глав EPUB можно посмотреть в архиве книги (EPUB — это zip).
+
+**Если перевод прервался** — запустите ту же команду ещё раз: EPUB продолжится с места остановки,
+в PDF уже переведённые абзацы возьмутся из кэша.
+
+Перевод идёт часами (ориентир на GPU 4 ГБ: ~10 мин на главу EPUB, ~25 с на страницу PDF),
+поэтому отключите переход компьютера в сон на это время.
+
+### Веб-интерфейс для PDF
+
+Для ручной работы с отдельными страницами есть веб-интерфейс PDFMathTranslate:
+```
+docker compose --profile pdf up -d      # http://127.0.0.1:7860
+docker compose --profile pdf stop pdf2zh
+```
+Настройки берутся из `config/pdf2zh/config.v3.toml`; изменения в интерфейсе в файл не сохраняются.
+
+## Как это работает
+
+**EPUB** (`scripts/epub.sh`):
+1. Подготовка: переменные в формулах (`<em>θ</em>`), подписи рисунков и числовые ячейки таблиц помечаются, чтобы их не трогала модель; предметный указатель пропускается.
+2. Перевод bilingual_book_maker по абзацам; код, формулы, ссылки, сноски, индексы передаются модели как метки и возвращаются на место.
+3. Восстановление разметки и выравнивание терминологии.
+4. Сверка структуры с оригиналом → отчёт.
+
+**PDF** (`scripts/pdf.sh`):
+1. Разбор: определяется моноширинный шрифт кода и ищутся рекламные вставки (ссылки t.me и т. п.).
+2. Рекламные строки вырезаются из рабочей копии — их перевод провоцирует у PDFMathTranslate «подмену кода» в длинных прогонах.
+3. Перевод PDFMathTranslate с защитой кода по шрифту.
+4. Проверка каждой страницы против оригинала: потеря кода, русский текст внутри кода, повторяющиеся «чужие» строки на месте кода.
+5. Ремонт: проблемные страницы переводятся заново короткими прогонами, берётся лучшая версия; если код так и не восстановился — после страницы вставляется английский оригинал с пометкой.
 
 ## Глоссарий
 
-`config/glossary/*.csv`, формат pdf2zh: `source,target,tgt_lng`, одна форма — именительный падеж
-(модель склоняет сама).
+Файлы `config/glossary/*.csv` в формате PDFMathTranslate (`source,target,tgt_lng`).
+Термин записывается в одной форме (именительный падеж) — модель склоняет его сама.
 
-| Файл | Когда |
+| Файл | Когда используется |
 |---|---|
 | `base.csv` | всегда |
-| `programming.csv`, `ml.csv`, `math.csv` | по аргументу `ml,math` |
-| `keep.csv` | непереводимые названия (SVD, PyTorch) — только для EPUB (в pdf2zh пары-тождества мешали) |
-| `source/<книга>.glossary.csv` | словарь конкретной книги, подхватывается сам |
+| `programming.csv`, `ml.csv`, `math.csv` | если область указана в команде |
+| `keep.csv` | названия, которые не переводятся (PyTorch, SVD…), — только для EPUB |
+| `source/<книга>.glossary.csv` | словарь конкретной книги, подключается автоматически |
 
-Одинаковые английские термины в разных областях переводятся по-разному (feature: признак или функциональность) —
-поэтому области выбираются под книгу. Пополнять по итогам каждой книги.
+Области разделены, потому что один и тот же термин в разных областях переводится по-разному
+(*feature* — «признак» в ML и «функциональность» в программировании). Новую область можно добавить,
+создав `config/glossary/<имя>.csv`.
 
-## Структура
+## Настройка
 
-```
-docker-compose.yml     сервисы: ollama, ollama-init, translate (EPUB, bbm), translate-pdf (PDF), pdf2zh (GUI)
-docker/pdf/Dockerfile  образ PDF-конвейера: pdf2zh + qpdf, poppler-utils, pdfplumber, reportlab
-config/ollama/Modelfile  translategemma-gpu: num_gpu 99, num_ctx 3072, temperature 0.2
-config/pdf2zh/         config.v3.toml
-config/glossary/       глоссарии
-scripts/               translate.sh → epub.sh: prep → bbm → restore → normalize → qa_epub
-                                   → pdf.sh:  pdf_analyze → pdf_clean → pdf2zh → repair_pdf (qa_pdf)
-source/  books/        книги (в git не попадают)
-```
+| Что | Где |
+|---|---|
+| Модель и её параметры (слои на GPU, контекст, температура) | `config/ollama/Modelfile`, затем `docker compose up -d ollama-init` |
+| Параметры PDFMathTranslate (шрифт, промпт, разбиение на части) | `config/pdf2zh/config.v3.toml` |
+| Исправления терминов после перевода EPUB | `scripts/normalize_terms.py` |
+| Версии образов | `docker-compose.yml`, `docker/pdf/Dockerfile` |
 
-Все образы закреплены по digest.
+Все образы закреплены по digest: обновления сторонних проектов не ломают проверенную связку.
+Чтобы обновить компонент, смените digest и прогоните пробную главу.
+
+## Ограничения
+
+- Качество прозы определяется моделью 4B: возможны неточности и неровная терминология; глоссарий заметно помогает.
+- EPUB: bilingual_book_maker не сохраняет inline-форматирование обычного текста — курсив терминов теряется
+  (переменные в формулах сохраняются). Текст ссылок и подписей («Figure 4-1», «Chapter 2») остаётся английским.
+- PDF: на части страниц PDFMathTranslate стабильно теряет код (например, путает заголовок листинга с его содержимым) —
+  для них в книгу вставляется английский оригинал страницы. Отсканированные PDF без текстового слоя требуют OCR.
+- Направление перевода — английский → русский (промпты, глоссарии и проверки рассчитаны на него).
+
+## Решение проблем
+
+| Симптом | Что делать |
+|---|---|
+| Перевод очень медленный, `docker exec ollama ollama ps` показывает CPU/GPU | модель не поместилась в видеопамять: закройте другие программы на GPU, `docker compose up -d ollama-init` |
+| Контейнер `ollama` не стартует с ошибкой про GPU | нет поддержки GPU в Docker — см. [Требования](#требования) |
+| Docker зависает, ошибки 500 | не хватает оперативной памяти: ограничьте память WSL (Windows) |
+| Скрипты падают с `\r: not found` | файлы получили переводы строк CRLF: `git config core.autocrlf false`, затем `git checkout .` |
+| В PowerShell команда `docker` не работает, а `docker.exe` работает | в `PATH` раньше Docker лежит посторонний файл `docker` — используйте `docker.exe` или уберите его |
+
+## Лицензии используемых компонентов
+
+Проект использует готовые образы и не включает их код:
+[Ollama](https://github.com/ollama/ollama) (MIT),
+[bilingual_book_maker](https://github.com/yihong0618/bilingual_book_maker) (MIT),
+[PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next) (AGPL-3.0),
+модель TranslateGemma — [условия использования Gemma](https://ai.google.dev/gemma/terms).
+Переводите только книги, на перевод которых у вас есть права (например, для личного использования, если это допускает закон вашей страны).
