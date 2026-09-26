@@ -1,0 +1,4 @@
+FROM translategemma:4b
+PARAMETER num_gpu 99
+PARAMETER num_ctx 3072
+PARAMETER temperature 0.2

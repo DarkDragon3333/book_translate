@@ -1,0 +1,7 @@
+# Скрипты выполняются в Linux-контейнерах: только LF, иначе sh падает на \r
+*.sh        text eol=lf
+*.py        text eol=lf
+*.yml       text eol=lf
+*.toml      text eol=lf
+*.csv       text eol=lf
+Modelfile   text eol=lf

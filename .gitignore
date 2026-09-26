@@ -1,0 +1,10 @@
+# Книги защищены авторским правом — в репозиторий не попадают
+source/*
+!source/.gitkeep
+books/*
+!books/.gitkeep
+done/
+*.epub
+*.pdf
+__pycache__/
+*.zip

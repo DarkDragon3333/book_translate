@@ -1,0 +1,121 @@
+# Локальный перевод технических книг EN → RU (EPUB и PDF).
+# Запуск:   docker compose up -d
+# EPUB:     docker compose run --rm translate     <книга.epub> [области глоссария]
+# PDF:      docker compose run --rm translate-pdf <книга.pdf>  [области глоссария]
+# PDF GUI:  docker compose --profile pdf up -d   → http://127.0.0.1:7860
+#
+# Все образы закреплены по digest: обновления не ломают проверенную систему.
+
+name: book_translate
+
+x-ollama-image: &ollama_image ollama/ollama@sha256:8262851b2846b87c649eddf3e76beb270c52f4d1bc94559f47efde16b0841551   # 0.34.4
+
+services:
+  ollama:
+    image: *ollama_image
+    container_name: ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"        # один запрос за раз — меньше VRAM
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_CONTEXT_LENGTH: "2048"   # у translategemma-gpu свой num_ctx в Modelfile
+    volumes:
+      - ollama-data:/root/.ollama     # модели переживают пересоздание контейнера
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # Один раз при запуске: скачивает базовую модель (если её нет)
+  # и (пере)создаёт translategemma-gpu из config/ollama/Modelfile.
+  ollama-init:
+    image: *ollama_image
+    container_name: ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ./config/ollama/Modelfile:/config/Modelfile:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ollama show translategemma:4b >/dev/null 2>&1 || ollama pull translategemma:4b
+        ollama create translategemma-gpu -f /config/Modelfile
+        echo "Модель translategemma-gpu готова"
+    restart: "no"
+
+  # Конвейер перевода. Не запускается через up — только через run.
+  translate:
+    image: ghcr.io/yihong0618/bilingual_book_maker@sha256:7f9cf02dae3d3bc4144723fcba759cf002649546af1e21cd4879fa88694ba2e6
+    profiles: ["cli"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    entrypoint: ["sh", "/scripts/translate.sh"]
+    working_dir: /app
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      MODEL: translategemma-gpu
+      BBM_API_KEY: ollama             # Ollama ключ не проверяет, но bbm требует его для не-localhost адреса
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./source:/source:ro           # оригиналы — только чтение
+      - ./books:/books                # рабочие файлы и результаты
+      - ./scripts:/scripts:ro
+      - ./config:/config:ro
+
+  # Конвейер перевода PDF: pdf2zh CLI + проверка и ремонт страниц. Только через run.
+  translate-pdf:
+    build: ./docker/pdf
+    image: book_translate/pdf-pipeline:1
+    profiles: ["cli"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    entrypoint: ["sh", "/scripts/translate.sh"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./source:/source:ro
+      - ./books:/books
+      - ./scripts:/scripts:ro
+      - ./config:/config:ro
+      - pdf2zh-cache:/root/.cache     # общий с GUI: кэш переводов и модели разметки
+
+  # PDF: веб-интерфейс pdf2zh (PDFMathTranslate-next).
+  pdf2zh:
+    image: awwaawwa/pdfmathtranslate-next@sha256:c737d5342c9220a56026733f3a42182581bb4d8e5052b133e3326babffea109a
+    container_name: pdf2zh
+    profiles: ["pdf"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:7860:7860"
+    volumes:
+      - ./config/pdf2zh/config.v3.toml:/root/.config/pdf2zh/config.v3.toml:ro
+      - ./config/glossary:/config/glossary:ro
+      - pdf2zh-cache:/root/.cache     # кэш переводов и модели разметки BabelDOC
+    restart: unless-stopped
+
+volumes:
+  ollama-data:
+  pdf2zh-cache:
