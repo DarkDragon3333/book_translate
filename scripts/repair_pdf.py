@@ -41,8 +41,9 @@ def translate(a, pages, outdir):
     if a.glossary:
         cmd += ['--glossaries', a.glossary]
     r = subprocess.run(cmd)
-    found = sorted(glob.glob(os.path.join(outdir, '*mono*.pdf')) or glob.glob(os.path.join(outdir, '*.pdf')),
-                   key=os.path.getmtime)
+    # listdir, а не glob: glob пропускает имена с точкой в начале (.work.ru.mono.pdf)
+    pdfs = [os.path.join(outdir, f) for f in os.listdir(outdir) if f.endswith('.pdf')]
+    found = sorted([f for f in pdfs if 'mono' in os.path.basename(f)] or pdfs, key=os.path.getmtime)
     if r.returncode or not found:
         log('    ! прогон стр. %s не удался' % pages)
         return None
@@ -133,9 +134,10 @@ def main():
     minor = [p for p, r in after.items() if r['bad'] and p not in inserted]
     rep = ['ОТЧЁТ ПО ПЕРЕВОДУ PDF', '',
            'До ремонта: ' + before.splitlines()[0],
-           'Заменено страниц лучшими версиями: %d %s' % (len(replaced), replaced[:40]),
+           'Заменено страниц лучшими версиями: %d %s' % (len(replaced), replaced),
            'Вставлены английские оригиналы после стр. (код не восстановился): %d %s' % (len(inserted), inserted),
-           'Остались мелкие дефекты (например, «и» в строках кода): %d %s' % (len(minor), minor[:40]),
+           'Остались мелкие дефекты (например, «и» в строках кода): %d %s' % (len(minor), minor),
+           '', 'Подробности после ремонта:', qa_pdf.summary(after, foreign),
            '', 'Подробности до ремонта:', before]
     open(a.report, 'w', encoding='utf-8').write('\n'.join(rep) + '\n')
     log('\n'.join(rep[:5]))
