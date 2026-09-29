@@ -7,9 +7,12 @@
 | Формат | Движок | Что сохраняется |
 |---|---|---|
 | EPUB | [bilingual_book_maker](https://github.com/yihong0618/bilingual_book_maker) + скрипты постобработки | код, формулы (MathML), списки, таблицы, сноски, ссылки, картинки, переменные с индексами |
-| PDF | [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next) (BabelDOC) + проверка и ремонт страниц | вёрстка страниц, код (по моноширинному шрифту), формулы |
+| PDF → EPUB | [Docling](https://github.com/docling-project/docling) (разметка страниц) + сборка EPUB из текста PDF + EPUB-конвейер | код построчно с отступами, выноски, inline-код, заголовки, рисунки, таблицы, номера страниц оригинала; вёрстка страниц — нет |
+| PDF → PDF | [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next) (BabelDOC) + проверка и ремонт страниц | вёрстка страниц, код (по моноширинному шрифту), формулы |
 
-Модель по умолчанию — [TranslateGemma 4B](https://ollama.com/library/translategemma), рассчитана на видеокарты от 4 ГБ.
+Модели (рассчитаны на видеокарты от 4 ГБ):
+- EPUB и PDF → EPUB — [YanoljaNEXT-Rosetta-4B](https://huggingface.co/yanolja/YanoljaNEXT-Rosetta-4B-2511) (модель-переводчик на Gemma 3, понимает глоссарий);
+- PDF → PDF — [TranslateGemma 4B](https://ollama.com/library/translategemma).
 
 ## Требования
 
@@ -17,7 +20,7 @@
 - **Docker с поддержкой GPU:**
   - Linux — Docker Engine + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
   - Windows — Docker Desktop с бэкендом WSL2 (GPU пробрасывается автоматически).
-- **~15 ГБ на диске:** образы (~13 ГБ) и модель (~3 ГБ).
+- **~30 ГБ на диске:** образы (~21 ГБ, из них Docling ~7,5 ГБ) и модели (~6 ГБ).
 - **Оперативная память:** от 16 ГБ. В Windows рекомендуется ограничить память WSL, иначе Docker может занять её всю:
   `%USERPROFILE%\.wslconfig` → `[wsl2]` / `memory=8GB` / `swap=16GB`, затем `wsl --shutdown`.
 
@@ -37,7 +40,7 @@ docker compose up -d
 При первом запуске скачиваются образы и модель. Готовность:
 ```
 docker compose ps -a              # ollama — healthy, ollama-init — Exited (0)
-docker compose logs ollama-init   # «Модель translategemma-gpu готова»
+docker compose logs ollama-init   # «Модель translategemma-gpu готова», «Модель rosetta-ru готова»
 ```
 
 ## Использование
@@ -46,7 +49,8 @@ docker compose logs ollama-init   # «Модель translategemma-gpu готов
 
 ```
 docker compose run --rm translate     book.epub [области]
-docker compose run --rm translate-pdf book.pdf  [области]
+docker compose run --rm pdf-epub      book.pdf  [области]    # PDF → русский EPUB (рекомендуется)
+docker compose run --rm translate-pdf book.pdf  [области]    # PDF → русский PDF с вёрсткой оригинала
 ```
 
 `[области]` — тематические глоссарии через запятую (см. [Глоссарий](#глоссарий)), например `programming` или `ml,math`.
@@ -59,15 +63,24 @@ docker compose run --rm translate-pdf book.pdf  [области]
 | `book_ru.epub` / `book_ru.pdf` | перевод |
 | `book_qa.txt` | отчёт проверки: сверка кода, формул, разметки с оригиналом, найденные проблемы |
 
+Для `pdf-epub` папка другая — `books/<имя книги>_epub/`: `book.epub` — английский EPUB, собранный из PDF,
+`book_ru.epub` — перевод, `book_qa.txt` — проверка, `book_docling.txt` — отчёт сборки EPUB из PDF.
+
 **Пробный прогон** перед переводом всей книги:
 ```
 docker compose run --rm -e ONLY=ch04.html translate     book.epub ml,math   # одна глава EPUB
 docker compose run --rm -e PAGES=40-60    translate-pdf book.pdf  programming  # диапазон страниц PDF
+docker compose run --rm -e PAGES=40-60    pdf-epub      book.pdf  programming  # то же через EPUB (папка book_epub_p40-60)
+docker compose run --rm -e EN_ONLY=1      pdf-epub      book.pdf               # только английский EPUB, без перевода
 ```
 Имена файлов глав EPUB можно посмотреть в архиве книги (EPUB — это zip).
 
 **Если перевод прервался** — запустите ту же команду ещё раз: EPUB продолжится с места остановки,
 в PDF уже переведённые абзацы возьмутся из кэша.
+
+**PDF → EPUB:** повтор команды берёт готовую разметку Docling и английский EPUB из папки книги. Чтобы собрать
+EPUB заново (например, после обновления `docling_rebuild.py`), удалите папку `books/<книга>_epub`.
+Сервис `docling` запускается сам и после перевода остаётся работать: `docker compose stop docling`.
 
 **PDF: повторная проверка без перевода.** Основной перевод PDF сохраняется в папке книги (`.pass0.pdf`),
 поэтому повтор той же команды после успешного прогона сразу переходит к проверке и ремонту страниц —
@@ -76,7 +89,37 @@ docker compose run --rm -e PAGES=40-60    translate-pdf book.pdf  programming  #
 Перевод идёт часами (ориентир на GPU 4 ГБ: ~10 мин на главу EPUB, книга PDF на 700 страниц — около 4 часов),
 поэтому отключите переход компьютера в сон на это время.
 
-### Веб-интерфейс для PDF
+### Приложение (Windows)
+
+Один раз создать ярлык «Перевод книг» на рабочем столе и в «Пуске»:
+```
+powershell -ExecutionPolicy Bypass -File app\install.ps1
+```
+Ярлык запускает Docker Desktop (если он не запущен), сервисы и открывает интерфейс отдельным окном.
+Значок в трее: открыть окно, папки `source` и `books`, «Отключать спящий режим на время перевода»
+(закрытая крышка ноутбука всё равно усыпит), выход. В подсказке значка — прогресс, по окончании — уведомление Windows.
+Значок же включает Docling, только когда в очереди есть PDF без разметки, и выключает его через 2 минуты после разметки:
+во время перевода Docling не нужен и не держит память.
+«Выход» оставляет перевод идти в Docker; «Остановить всё и выйти» останавливает сервисы.
+Журнал запуска: `%LOCALAPPDATA%\BookTranslate\launcher.log`.
+
+### Веб-интерфейс
+
+```
+docker compose --profile gui up -d      # http://127.0.0.1:8090
+```
+Книги из `source/`, режим (EPUB или PDF → EPUB), глоссарии, диапазон страниц или главы, модель → «Поставить в очередь».
+Книги переводятся по одной; видно этап, прогресс по абзацам и оставшееся время, лог, готовые файлы, абзацы EN/RU
+из журнала адаптера. «Стоп» останавливает перевод, «Повторить» продолжает с места остановки. Интерфейс запускает те же
+скрипты, что и команды выше; одну книгу нельзя переводить одновременно из интерфейса и командой.
+Вкладка «Просмотр» показывает главу оригинала и перевода рядом, «История» — завершённые задачи.
+В шапке — загрузка GPU, CPU и памяти Docker (RAM считается от лимита WSL).
+PDF → PDF (PDFMathTranslate) — только командой `translate-pdf`.
+
+Docling вместе с интерфейсом не запускается: его включает значок в трее. Если интерфейс поднят командой без приложения,
+для PDF запустите Docling сами: `docker compose --profile docling up -d docling`.
+
+### Веб-интерфейс PDFMathTranslate
 
 Для ручной работы с отдельными страницами есть веб-интерфейс PDFMathTranslate:
 ```
@@ -90,11 +133,21 @@ docker compose --profile pdf stop pdf2zh
 **EPUB** (`scripts/epub.sh`):
 1. Подготовка: переменные в формулах (`<em>θ</em>`), подписи рисунков и числовые ячейки таблиц помечаются, чтобы их не трогала модель; предметный указатель пропускается.
 2. Перевод bilingual_book_maker по абзацам; код, формулы, ссылки, сноски, индексы передаются модели как метки и возвращаются на место.
-3. Восстановление разметки и выравнивание терминологии.
+   Rosetta понимает только свой формат запроса, поэтому между bilingual_book_maker и Ollama встаёт адаптер
+   `scripts/rosetta_proxy.py`: передаёт модели глоссарий, чинит метки кода, возвращает ответ в нужном формате.
+3. Восстановление разметки, выравнивание терминологии, оглавление — из переведённых заголовков.
 4. Сверка структуры с оригиналом → отчёт.
 
+**PDF → EPUB** (`scripts/pdf_epub.sh`):
+1. Docling (сервис `docling`) размечает страницы кусками по 50: где абзац, код, заголовок, рисунок, таблица, в каком порядке читать.
+2. `scripts/docling_rebuild.py` берёт текст из самого PDF по рамкам Docling (шрифт кода определяет `pdf_analyze.py`, как в пути PDF → PDF): код — построчно с отступами, выноски со стрелками — нумерованным списком,
+   inline-код и курсив — по шрифту, переносы снимаются, рисунки вырезаются из страницы, реклама (t.me и т. п.) выбрасывается → английский EPUB.
+3. Дальше — EPUB-конвейер.
+
 **PDF** (`scripts/pdf.sh`):
-1. Разбор: определяется моноширинный шрифт кода и ищутся рекламные вставки (ссылки t.me и т. п.).
+1. Разбор: определяется шрифт кода — по названию (Courier, *Mono*, Consolas…) или по одинаковой ширине всех символов
+   (так находятся шрифты вроде `mplus1mn` в Pro Git), — и ищутся рекламные вставки (t.me, telegram, vk на нескольких страницах;
+   обычные ссылки `https://…` не трогаются: они бывают и в коде).
 2. Рекламные строки вырезаются из рабочей копии — их перевод провоцирует у PDFMathTranslate «подмену кода» в длинных прогонах.
 3. Перевод PDFMathTranslate с защитой кода по шрифту.
 4. Проверка каждой страницы против оригинала: потеря кода, русский текст внутри кода, повторяющиеся «чужие» строки и посторонние фразы (заголовки разделов, фрагменты других страниц) на месте строк кода.
@@ -120,10 +173,11 @@ docker compose --profile pdf stop pdf2zh
 
 | Что | Где |
 |---|---|
-| Модель и её параметры (слои на GPU, контекст, температура) | `config/ollama/Modelfile`, затем `docker compose up -d ollama-init` |
+| Модель и её параметры (слои на GPU, контекст, температура) | `config/ollama/Modelfile.rosetta` (EPUB), `config/ollama/Modelfile` (PDF), затем `docker compose up -d ollama-init` |
+| Другая модель для EPUB | `-e MODEL=translategemma-gpu` в команде `translate` / `pdf-epub` |
 | Параметры PDFMathTranslate (шрифт, промпт, разбиение на части) | `config/pdf2zh/config.v3.toml` |
 | Исправления терминов после перевода EPUB | `scripts/normalize_terms.py` |
-| Версии образов | `docker-compose.yml`, `docker/pdf/Dockerfile` |
+| Версии образов | `docker-compose.yml`, `docker/pdf/Dockerfile`, `docker/epub/Dockerfile` |
 
 Все образы закреплены по digest: обновления сторонних проектов не ломают проверенную связку.
 Чтобы обновить компонент, смените digest и прогоните пробную главу.
@@ -133,9 +187,27 @@ docker compose --profile pdf stop pdf2zh
 - Качество прозы определяется моделью 4B: возможны неточности и неровная терминология; глоссарий заметно помогает.
 - EPUB: bilingual_book_maker не сохраняет inline-форматирование обычного текста — курсив терминов теряется
   (переменные в формулах сохраняются). Текст ссылок и подписей («Figure 4-1», «Chapter 2») остаётся английским.
-- PDF: на части страниц PDFMathTranslate стабильно теряет код (например, путает заголовок листинга с его содержимым) —
+- PDF → EPUB: вёрстка страниц не сохраняется (EPUB «резиновый»), номера страниц оригинала — метками;
+  курсив в переводе теряется, как и у EPUB.
+- PDF → PDF: на части страниц PDFMathTranslate стабильно теряет код (например, путает заголовок листинга с его содержимым) —
   для них в книгу вставляется английский оригинал страницы. Отсканированные PDF без текстового слоя требуют OCR.
 - Направление перевода — английский → русский (промпты, глоссарии и проверки рассчитаны на него).
+
+## Тестовые книги
+
+В `test_books/` — книги со свободными лицензиями для проверки конвейера после изменений:
+`testbook` (3 главы со всеми видами разметки, переводится за несколько минут, лежит в репозитории),
+Pro Git и The API Book (длинные книги, скачиваются скриптом). Подробности — `test_books/README.md`.
+```
+powershell -ExecutionPolicy Bypass -File test_books\download.ps1
+copy test_books\testbook.epub source\
+docker compose run --rm translate testbook.epub programming,ml,math
+```
+
+## Инструменты разработчика
+
+`scripts/tools/log_proxy.py` — прокси между bilingual_book_maker и Ollama, записывает запросы как есть.
+Нужен, чтобы увидеть точный формат запроса (например, при подключении новой модели через адаптер).
 
 ## Решение проблем
 
@@ -144,6 +216,7 @@ docker compose --profile pdf stop pdf2zh
 | Перевод очень медленный, `docker exec ollama ollama ps` показывает CPU/GPU | модель не поместилась в видеопамять: закройте другие программы на GPU, `docker compose up -d ollama-init` |
 | Контейнер `ollama` не стартует с ошибкой про GPU | нет поддержки GPU в Docker — см. [Требования](#требования) |
 | Docker зависает, ошибки 500 | не хватает оперативной памяти: ограничьте память WSL (Windows) |
+| Приложение: «Интерфейс не ответил за 2 минуты» | `%LOCALAPPDATA%\BookTranslate\launcher.log`; проверьте `docker compose --profile gui ps` и `docker logs book-gui` |
 | Скрипты падают с `\r: not found` | файлы получили переводы строк CRLF: `git config core.autocrlf false`, затем `git checkout .` |
 | В PowerShell команда `docker` не работает, а `docker.exe` работает | в `PATH` раньше Docker лежит посторонний файл `docker` — используйте `docker.exe` или уберите его |
 
@@ -153,5 +226,6 @@ docker compose --profile pdf stop pdf2zh
 [Ollama](https://github.com/ollama/ollama) (MIT),
 [bilingual_book_maker](https://github.com/yihong0618/bilingual_book_maker) (MIT),
 [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next) (AGPL-3.0),
-модель TranslateGemma — [условия использования Gemma](https://ai.google.dev/gemma/terms).
+[Docling](https://github.com/docling-project/docling-serve) (MIT), [pdfplumber](https://github.com/jsvine/pdfplumber) (MIT),
+модели TranslateGemma и YanoljaNEXT-Rosetta — [условия использования Gemma](https://ai.google.dev/gemma/terms).
 Переводите только книги, на перевод которых у вас есть права (например, для личного использования, если это допускает закон вашей страны).

@@ -4,4 +4,10 @@
 *.yml       text eol=lf
 *.toml      text eol=lf
 *.csv       text eol=lf
-Modelfile   text eol=lf
+Modelfile*  text eol=lf
+*.ps1       -text
+*.ico       binary
+*.html      text eol=lf
+*.epub      binary
+*.pdf       binary
+*.png       binary

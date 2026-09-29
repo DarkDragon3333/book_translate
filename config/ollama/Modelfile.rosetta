@@ -1,0 +1,16 @@
+# rosetta-ru: yanolja/YanoljaNEXT-Rosetta-4B-2511 (Gemma 3 4B, дообучена на перевод), GGUF Q5_K_M.
+# Шаблон повторяет chat_template.jinja модели:
+#   <start_of_turn>instruction\n{system}<end_of_turn>\n<start_of_turn>source\n{текст}<end_of_turn>\n<start_of_turn>translation\n
+# BOS добавляет llama.cpp. В system — задание, контекст и глоссарий; в source — текст (лучше JSON).
+FROM hf.co/yanolja/YanoljaNEXT-Rosetta-4B-2511-GGUF:Q5_K_M
+TEMPLATE """{{- if .System }}<start_of_turn>instruction
+{{ .System }}<end_of_turn>
+{{ end }}<start_of_turn>source
+{{ .Prompt }}<end_of_turn>
+<start_of_turn>translation
+"""
+PARAMETER num_gpu 99
+PARAMETER num_ctx 3072
+PARAMETER temperature 0.2
+PARAMETER stop <end_of_turn>
+PARAMETER stop <start_of_turn>

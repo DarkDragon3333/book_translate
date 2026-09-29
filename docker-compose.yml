@@ -1,8 +1,10 @@
 # Локальный перевод технических книг EN → RU (EPUB и PDF).
 # Запуск:   docker compose up -d
 # EPUB:     docker compose run --rm translate     <книга.epub> [области глоссария]
-# PDF:      docker compose run --rm translate-pdf <книга.pdf>  [области глоссария]
+# PDF→EPUB: docker compose run --rm pdf-epub      <книга.pdf>  [области глоссария]   (Docling + EPUB-конвейер)
+# PDF→PDF:  docker compose run --rm translate-pdf <книга.pdf>  [области глоссария]   (pdf2zh)
 # PDF GUI:  docker compose --profile pdf up -d   → http://127.0.0.1:7860
+# Интерфейс: docker compose --profile gui up -d  → http://127.0.0.1:8090 (EPUB и PDF → EPUB, очередь, прогресс)
 #
 # Все образы закреплены по digest: обновления не ломают проверенную систему.
 
@@ -21,8 +23,14 @@ services:
       OLLAMA_FLASH_ATTENTION: "1"
       OLLAMA_KV_CACHE_TYPE: q8_0
       OLLAMA_CONTEXT_LENGTH: "2048"   # у translategemma-gpu свой num_ctx в Modelfile
+      # Движок llama-server по умолчанию копит кэш промптов в оперативной памяти до 8 ГБ (--cache-ram 8192).
+      # При переводе книги каждый абзац — новый промпт, кэш бесполезен, а лимит WSL — 8 ГБ на всё:
+      # 29.09 перевод книги упал с «Cannot allocate memory». 0 — кэш выключен.
+      LLAMA_ARG_CACHE_RAM: "0"
     volumes:
       - ollama-data:/root/.ollama     # модели переживают пересоздание контейнера
+      - ./models:/models:ro           # дообученные GGUF (training/, Kaggle)
+      - ./config/ollama:/config/ollama:ro
     deploy:
       resources:
         reservations:
@@ -49,6 +57,7 @@ services:
       OLLAMA_HOST: http://ollama:11434
     volumes:
       - ./config/ollama/Modelfile:/config/Modelfile:ro
+      - ./config/ollama:/config/ollama:ro
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -56,6 +65,10 @@ services:
         ollama show translategemma:4b >/dev/null 2>&1 || ollama pull translategemma:4b
         ollama create translategemma-gpu -f /config/Modelfile
         echo "Модель translategemma-gpu готова"
+        ROSETTA=hf.co/yanolja/YanoljaNEXT-Rosetta-4B-2511-GGUF:Q5_K_M
+        ollama show $$ROSETTA >/dev/null 2>&1 || ollama pull $$ROSETTA
+        ollama create rosetta-ru -f /config/ollama/Modelfile.rosetta
+        echo "Модель rosetta-ru готова (модель по умолчанию для EPUB)"
     restart: "no"
 
   # Конвейер перевода. Не запускается через up — только через run.
@@ -71,7 +84,7 @@ services:
     working_dir: /app
     environment:
       OLLAMA_URL: http://ollama:11434
-      MODEL: translategemma-gpu
+      MODEL: rosetta-ru               # 29.09: лучше translategemma-gpu по терминам и chrF; прежняя: -e MODEL=translategemma-gpu
       BBM_API_KEY: ollama             # Ollama ключ не проверяет, но bbm требует его для не-localhost адреса
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -79,6 +92,85 @@ services:
       - ./books:/books                # рабочие файлы и результаты
       - ./scripts:/scripts:ro
       - ./config:/config:ro
+
+  # PDF → EPUB → перевод: Docling размечает страницы, docling_rebuild собирает английский EPUB,
+  # дальше обычный EPUB-конвейер (Rosetta). Только через run. Результат — books/<книга>_epub/.
+  pdf-epub:
+    build: ./docker/epub
+    image: book_translate/pdf-epub:1
+    profiles: ["cli"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+      docling:
+        condition: service_started
+    entrypoint: ["sh", "/scripts/translate.sh"]
+    working_dir: /app
+    environment:
+      PIPELINE: docling
+      DOCLING_URL: http://docling:5001
+      OLLAMA_URL: http://ollama:11434
+      MODEL: rosetta-ru
+      BBM_API_KEY: ollama
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./source:/source:ro
+      - ./books:/books
+      - ./scripts:/scripts:ro
+      - ./config:/config:ro
+
+  # Веб-интерфейс: очередь книг, выбор глоссариев/страниц/глав, прогресс, результаты, абзацы EN/RU.
+  # Запускает тот же scripts/translate.sh, что и `run pdf-epub`/`run translate`. PDF → PDF (pdf2zh) — только командой.
+  gui:
+    image: book_translate/pdf-epub:1
+    build: ./docker/epub
+    container_name: book-gui
+    profiles: ["gui"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    # Docling (разметка PDF) интерфейс не запускает: его включает и выключает значок в трее (app/BookTranslate.ps1)
+    entrypoint: ["python", "/scripts/gui/server.py"]
+    working_dir: /app
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      DOCLING_URL: http://docling:5001
+      OLLAMA_URL: http://ollama:11434
+      MODEL: rosetta-ru
+      BBM_API_KEY: ollama
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./source:/source:ro
+      - ./books:/books
+      - ./scripts:/scripts:ro
+      - ./config:/config:ro
+    stop_grace_period: 30s        # перевод останавливается аккуратно и продолжается кнопкой «Повторить»
+    deploy:                       # только для nvidia-smi: строка состояния показывает загрузку GPU
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Docling (docling-serve, CPU): разметка PDF по HTTP для pdf-epub. Модели уже в образе; грузятся в память
+  # при первом запросе и выгружаются после разметки книги. Запускается сам вместе с pdf-epub;
+  # остановить после перевода: docker compose stop docling
+  docling:
+    image: quay.io/docling-project/docling-serve-cpu@sha256:953dec7821c17e2ff67f9bc6f5b924e84371fcf9b87683fe310ed9bfa074cec8   # Docling 2.130.0
+    container_name: docling
+    profiles: ["cli", "docling"]  # не стартует вместе с интерфейсом: значок в трее включает его только для PDF
+    environment:
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "1"     # одна книга за раз — меньше памяти
+      DOCLING_SERVE_LOAD_MODELS_AT_BOOT: "false"
+      DOCLING_SERVE_ENABLE_UI: "false"
+    restart: "no"
 
   # Конвейер перевода PDF: pdf2zh CLI + проверка и ремонт страниц. Только через run.
   translate-pdf:
@@ -115,6 +207,7 @@ services:
       - ./config/glossary:/config/glossary:ro
       - pdf2zh-cache:/root/.cache     # кэш переводов и модели разметки BabelDOC
     restart: unless-stopped
+
 
 volumes:
   ollama-data:

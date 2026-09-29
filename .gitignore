@@ -8,3 +8,18 @@ done/
 *.pdf
 __pycache__/
 *.zip
+# эксперимент с дообучением (закрыт) — только локально
+training/
+models/
+.env
+# тестовые книги: в репозитории только testbook, остальные качает test_books/download.ps1
+test_books/*
+!test_books/README.md
+!test_books/download.ps1
+!test_books/testbook.epub
+!test_books/testbook.pdf
+!test_books/testbook_src/
+test_books/testbook_src/*.tex
+test_books/testbook_src/*.aux
+test_books/testbook_src/*.log
+test_books/testbook_src/*.toc

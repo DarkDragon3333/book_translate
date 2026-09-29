@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Перевод книг</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --text: #1d2330; --muted: #6a7282; --line: #dde1e7;
+  --accent: #2f6fdb; --accent-soft: #e6eefc; --ok: #1f8a4c; --ok-soft: #e3f4ea; --bad: #c9372c; --bad-soft: #fbe7e5;
+  --warn: #a76a00; --warn-soft: #fcf1dc; --code: #f0f2f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --panel: #1c2027; --text: #e4e7ec; --muted: #9098a6; --line: #2e343e;
+    --accent: #6d9ef5; --accent-soft: #1f2d45; --ok: #4cc47f; --ok-soft: #173424; --bad: #f07267; --bad-soft: #3d1f1d;
+    --warn: #e0a63c; --warn-soft: #3a2d14; --code: #242932;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+.sys { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; align-items: center; }
+.chip { padding: 3px 9px; border-radius: 999px; font-size: 12px; background: var(--code); color: var(--muted); white-space: nowrap; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); } .chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+/* строка состояния: загрузка GPU / CPU / RAM. Цвет появляется только при проблеме */
+.sys { gap: 14px; font-size: 12px; }
+.meter { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.meter b { font-weight: 600; color: var(--text); }
+.meter i { display: block; width: 46px; height: 6px; border-radius: 3px; background: var(--code); overflow: hidden; }
+.meter i u { display: block; height: 100%; width: 0; background: var(--accent); transition: width .6s; }
+.meter span { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+.meter.warn i u { background: var(--warn); } .meter.warn span { color: var(--warn); }
+.meter.bad i u { background: var(--bad); } .meter.bad span { color: var(--bad); }
+.meter.na { opacity: .5; }
+/* широкий экран: книги | форма | работа. Список книг — во всю высоту окна, прокручивается сам */
+main { display: grid; gap: 16px; padding: 16px 20px; align-items: start;
+       grid-template-columns: 290px minmax(320px, 390px) 1fr; grid-template-areas: "books form status"; }
+.bookscol { grid-area: books; position: sticky; top: 16px; align-self: start; }
+.formcol { grid-area: form; } .statuscol { grid-area: status; }
+.bookscol section.books { height: calc(100vh - 100px); min-height: 300px; display: flex; flex-direction: column; margin-bottom: 0; }
+#books { overflow-y: auto; flex: 1; margin: 0 -6px; padding: 0 6px; }
+.book { display: block; padding: 6px 8px; border-radius: 7px; cursor: pointer; border: 1px solid transparent; }
+.book:hover { background: var(--code); }
+.book.sel { border-color: var(--accent); background: var(--accent-soft); }
+.book .bn { font-weight: 600; overflow-wrap: anywhere; }
+.book .bm { color: var(--muted); font-size: 12px; display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: center; margin-top: 1px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; }
+.dot.done { background: var(--ok); } .dot.failed { background: var(--bad); } .dot.half { background: var(--warn); }
+.dot.run { background: var(--accent); }
+.bm > span { white-space: nowrap; }
+.bm .fmt::before { content: '·'; margin-right: 6px; }
+.bm .st.done { color: var(--ok); } .bm .st.failed { color: var(--bad); } .bm .st.run { color: var(--accent); }
+.bookfiles { margin: 0 0 6px 8px; }
+.bookfiles summary { margin-top: 0; }
+.books-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.books-head h2 { margin: 0; }
+.books-head input { flex: 1; padding: 4px 8px; }
+@media (max-width: 1350px) {
+  main { grid-template-columns: minmax(320px, 400px) 1fr; grid-template-areas: "form status" "books status"; grid-template-rows: auto 1fr; }
+  .bookscol { position: static; }
+  .bookscol section.books { height: auto; max-height: 460px; min-height: 0; }
+}
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; grid-template-areas: "form" "books" "status"; grid-template-rows: auto; padding: 12px; }
+}
+nav.tabs { display: flex; gap: 4px; margin-left: 12px; }
+nav.tabs button { border: none; background: none; padding: 6px 12px; border-radius: 7px; color: var(--muted); }
+nav.tabs button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.picked { padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--code); font-weight: 600; overflow-wrap: anywhere; }
+.picked.none { font-weight: 400; color: var(--muted); font-style: italic; }
+#help { max-width: 900px; margin: 16px auto; padding: 0 20px; }
+#historytab { max-width: 1100px; margin: 16px auto; padding: 0 20px; }
+.panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.panel-head h2 { margin: 0 !important; }
+.panel-head .sp { margin-left: auto; }
+#viewtab { padding: 12px 20px 16px; }
+.viewbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.viewbar select { width: auto; min-width: 200px; max-width: 420px; }
+.viewpanes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 900px) { .viewpanes { grid-template-columns: 1fr; } }
+.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+.pane .ph { padding: 8px 12px; font-weight: 600; border-bottom: 1px solid var(--line); display: flex; gap: 8px; }
+.pane .ph .meta { font-weight: 400; margin-left: auto; }
+.pane iframe { border: 0; width: 100%; height: calc(100vh - 170px); min-height: 400px; background: #fff; }
+.pane .none { padding: 24px; color: var(--muted); height: calc(100vh - 170px); }
+.chapters .num { color: var(--muted); font-size: 12px; min-width: 22px; text-align: right; }
+.chapters .ok { color: var(--ok); font-size: 12px; margin-left: auto; white-space: nowrap; }
+#help section.panel { padding: 16px 22px; }
+#help h2 { font-size: 16px; }
+#help h3 { font-size: 14px; margin: 16px 0 6px; }
+#help p, #help li { line-height: 1.55; }
+#help ol, #help ul { padding-left: 22px; margin: 6px 0; }
+#help code { background: var(--code); border-radius: 4px; padding: 0 4px; font-size: 12.5px; }
+#help .chip { display: inline-block; }
+#help table { border-collapse: collapse; margin: 6px 0; }
+#help td { padding: 3px 10px 3px 0; vertical-align: top; }
+section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+section.panel h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+.row, label.row { display: block; margin: 12px 0 5px; color: var(--muted); font-size: 13px; font-weight: 600; }
+select, input[type=text], input[type=number] { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); font: inherit; }
+input[type=number] { width: 90px; }
+.checks label { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+.checks .n { color: var(--muted); font-size: 12px; margin-left: auto; }
+.chapters { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; }
+.chapters label { display: flex; gap: 8px; padding: 2px 0; font-size: 13px; user-select: none; -webkit-user-select: none; }
+.chapters .f { color: var(--muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
+.inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+button { font: inherit; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:focus { outline: none; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:disabled { opacity: .45; cursor: default; border-color: var(--line); }
+html { scrollbar-gutter: stable; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { flex: 1; border: none; border-radius: 0; padding: 7px 6px; background: var(--panel); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+.chtools { display: flex; gap: 6px; align-items: center; margin: 8px 0 6px; flex-wrap: wrap; }
+.chtools .hint { margin: 0 0 0 auto; }
+.check { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.dlg-modes { display: flex; gap: 4px; }
+.dlg-modes button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.untr { padding: 8px 16px 16px; }
+.untr .row1 { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.untr .row1 .f { color: var(--muted); font-size: 12px; }
+#help table.t { border-collapse: collapse; width: 100%; margin: 8px 0 4px; font-size: 13.5px; }
+#help table.t th, #help table.t td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+#help table.t th { background: var(--code); font-weight: 600; }
+#help table.t td:first-child { white-space: nowrap; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; width: 100%; margin-top: 14px; padding: 9px; }
+button.danger { color: var(--bad); }
+button.small { padding: 3px 9px; font-size: 12px; }
+.err { color: var(--bad); margin-top: 8px; min-height: 1em; }
+.job { border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px; margin-bottom: 10px; }
+.job .top { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.job .title { font-weight: 600; }
+.job .meta { color: var(--muted); font-size: 12px; }
+.job .actions { margin-left: auto; display: flex; gap: 6px; }
+.status { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--code); }
+.status.running { background: var(--accent-soft); color: var(--accent); } .status.done { background: var(--ok-soft); color: var(--ok); }
+.status.failed, .status.interrupted { background: var(--bad-soft); color: var(--bad); } .status.stopped, .status.cancelled { background: var(--warn-soft); color: var(--warn); }
+.bar { height: 10px; background: var(--code); border-radius: 999px; overflow: hidden; margin: 10px 0 4px; }
+.bar > div { height: 100%; background: var(--accent); width: 0; transition: width .6s; }
+.stages { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+.stages span { font-size: 11px; padding: 2px 7px; border-radius: 5px; background: var(--code); color: var(--muted); }
+.stages span.cur { background: var(--accent); color: #fff; } .stages span.past { color: var(--ok); }
+pre.log { background: var(--code); border-radius: 7px; padding: 8px 10px; max-height: 260px; overflow: auto; font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; margin: 8px 0 0; }
+.files { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.files a { font-size: 12px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; text-decoration: none; color: var(--accent); }
+.note { font-size: 12px; margin-top: 6px; color: var(--warn); }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 8px; }
+.empty { color: var(--muted); font-style: italic; }
+dialog { width: min(1100px, 96vw); max-height: 90vh; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 0; }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+.dlg-head { display: flex; gap: 10px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); flex-wrap: wrap; }
+.pairs { padding: 8px 16px 16px; }
+.pair { display: grid; grid-template-columns: 40px 1fr 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+@media (max-width: 700px) { .pair { grid-template-columns: 1fr; } }
+.pair .n { color: var(--muted); font-size: 11px; }
+.pair.bad { background: var(--bad-soft); }
+.mark { background: var(--code); border-radius: 3px; padding: 0 2px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Перевод книг</h1>
+  <nav class="tabs"><button class="on" data-tab="work">Перевод</button><button data-tab="view">Просмотр</button><button data-tab="history">История</button><button data-tab="help">Помощь</button></nav>
+  <div class="sys" id="sys">
+    <span class="meter na" id="s-gpu"><b>GPU</b><i><u></u></i><span>—</span></span>
+    <span class="meter na" id="s-cpu"><b>CPU</b><i><u></u></i><span>—</span></span>
+    <span class="meter na" id="s-ram"><b>RAM</b><i><u></u></i><span>—</span></span>
+  </div>
+</header>
+<main>
+  <div class="formcol">
+    <section class="panel">
+      <h2>Новый перевод</h2>
+      <div class="row">Книга</div>
+      <input type="hidden" id="book">
+      <div class="picked none" id="bookname">Выберите книгу в списке «Книги»</div>
+      <div class="hint" id="bookinfo"></div>
+
+      <div class="row">Что переводить</div>
+      <div class="seg" id="scope">
+        <button type="button" data-scope="all" class="on">Всю книгу</button>
+        <button type="button" data-scope="chapters">Главы</button>
+        <button type="button" data-scope="pages">Страницы</button>
+      </div>
+      <div id="scope-chapters" hidden>
+        <div class="chtools">
+          <button class="small" type="button" id="chall">Отметить все</button>
+          <button class="small" type="button" id="chnone">Снять все</button>
+          <span class="hint">Shift+щелчок — диапазон</span>
+        </div>
+        <div class="chapters" id="chapters"></div>
+        <div class="hint" id="chhint"></div>
+      </div>
+      <div id="scope-pages" hidden>
+        <div class="inline" style="margin-top:8px">
+          с <input type="number" id="pfrom" min="1" value="1"> по <input type="number" id="pto" min="1" value="1">
+          <span class="hint" id="ptotal"></span>
+        </div>
+        <div class="hint">Часть книги сохраняется в отдельную папку и не мешает переводу всей книги.</div>
+      </div>
+      <label class="check" id="enonlyrow" hidden><input type="checkbox" id="enonly"> Только разметить PDF, без перевода</label>
+
+      <div class="row">Глоссарии</div>
+      <div class="checks" id="gloss"></div>
+      <div class="hint" id="glossbase"></div>
+      <div class="hint" id="bookgloss"></div>
+
+      <label class="row" for="model">Модель</label>
+      <select id="model"></select>
+
+      <button class="primary" id="start">Поставить в очередь</button>
+      <div class="err" id="err"></div>
+    </section>
+
+
+  </div>
+
+  <div class="bookscol">
+    <section class="panel books">
+      <div class="books-head"><h2>Книги</h2><input type="text" id="bookfilter" placeholder="поиск"></div>
+      <div id="books"></div>
+    </section>
+  </div>
+
+  <div class="statuscol">
+    <section class="panel">
+      <h2>Сейчас</h2>
+      <div id="current"><div class="empty">Ничего не переводится.</div></div>
+    </section>
+    <section class="panel">
+      <h2>Очередь</h2>
+      <div id="queue"><div class="empty">Пусто.</div></div>
+    </section>
+  </div>
+</main>
+
+<div id="historytab" hidden>
+<section class="panel">
+  <div class="panel-head"><h2>История</h2><button class="small sp" id="clearhist">Очистить историю</button></div>
+  <div id="history"><div class="empty">Пока ничего.</div></div>
+</section>
+</div>
+
+<div id="viewtab" hidden>
+  <div class="viewbar">
+    <select id="vbook"></select>
+    <button class="small" id="vprev" title="Предыдущая глава">←</button>
+    <select id="vch"></select>
+    <button class="small" id="vnext" title="Следующая глава">→</button>
+    <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="vsync" checked> прокручивать вместе</label>
+  </div>
+  <div class="viewpanes">
+    <div class="pane"><div class="ph">Оригинал</div><iframe id="ven" sandbox="allow-same-origin" title="Оригинал"></iframe></div>
+    <div class="pane"><div class="ph">Перевод <span class="meta" id="vrunote"></span></div>
+      <iframe id="vru" sandbox="allow-same-origin" title="Перевод"></iframe><div class="none" id="vrunone" hidden></div></div>
+  </div>
+</div>
+
+<div id="help" hidden>
+<section class="panel">
+  <h2>Как пользоваться</h2>
+  <p>Приложение переводит технические книги в форматах EPUB и PDF с английского на русский. Перевод выполняется
+  на этом компьютере, книги никуда не отправляются. Код, формулы, рисунки, таблицы и номера разделов остаются как в оригинале.</p>
+
+  <h3>Порядок работы</h3>
+  <ol>
+    <li>Скопируйте книгу в папку <code>source</code>. Открыть её можно из меню значка в трее: «Папка с книгами».</li>
+    <li>Выберите книгу в списке «Книги».</li>
+    <li>Укажите, что переводить: всю книгу, отдельные главы или диапазон страниц (только для PDF).</li>
+    <li>Отметьте глоссарии по теме книги.</li>
+    <li>Нажмите «Поставить в очередь». Ход работы показан в разделе «Сейчас».</li>
+  </ol>
+  <table class="t">
+    <tr><th>Вкладка</th><th>Назначение</th></tr>
+    <tr><td>Перевод</td><td>Список книг, параметры перевода, текущая задача и очередь.</td></tr>
+    <tr><td>Просмотр</td><td>Оригинал и перевод главы рядом. Прокрутка обеих сторон синхронна.</td></tr>
+    <tr><td>История</td><td>Завершённые задачи, их файлы и логи. Кнопка «Очистить историю» удаляет записи, книги остаются.</td></tr>
+  </table>
+  <p>Скорость — около 1,5 секунды на абзац, книга в 700 страниц переводится примерно за 3 часа.
+  PDF перед переводом размечается (программа Docling), на 700 страниц это ещё около 15 минут. Docling включается сам,
+  когда в очереди есть PDF без разметки, и выключается через две минуты после того, как разметка закончена: во время перевода
+  он не нужен и не занимает память. Пока идёт перевод, спящий режим компьютера отключён (пункт меню значка в трее «Отключать спящий режим на время перевода»).
+  Окно можно закрыть: перевод продолжится, а по окончании придёт уведомление.</p>
+
+  <h3>Параметры перевода</h3>
+  <table class="t">
+    <tr><th>Параметр</th><th>Описание</th></tr>
+    <tr><td>Вся книга</td><td>Перевод всех глав, кроме предметного указателя.</td></tr>
+    <tr><td>Главы</td><td>Перевод отмеченных глав. Удобно для пробы. У PDF список глав появляется после разметки книги
+      (можно запустить её отдельно: «Только разметить PDF»).</td></tr>
+    <tr><td>Страницы</td><td>Перевод диапазона страниц PDF. Результат сохраняется в отдельную папку.</td></tr>
+    <tr><td>Глоссарии</td><td>Словари терминов. Общий словарь <code>base</code> подключается всегда. Области
+      (<code>programming</code>, <code>ml</code>, <code>math</code>) выбираются по теме книги: один и тот же термин в разных
+      областях переводится по-разному. Словарь отдельной книги — файл <code>source/&lt;имя книги&gt;.glossary.csv</code>,
+      он подключается автоматически.</td></tr>
+    <tr><td>Модель</td><td><code>rosetta-ru</code> (YanoljaNEXT-Rosetta-4B) — модель по умолчанию. Обучена переводить с глоссарием;
+      в сравнительных тестах точнее соблюдает термины и пишет более естественным языком.<br>
+      <code>translategemma-gpu</code> (Google TranslateGemma-4B) — вторая модель с другим характером ошибок. Её стоит выбрать,
+      если <code>rosetta-ru</code> плохо справляется с конкретной книгой: путает смысл, оставляет абзацы на английском
+      или портит разметку. Повторный перевод заменяет прежний результат.</td></tr>
+  </table>
+
+  <h3>Состояния книг</h3>
+  <table class="t">
+    <tr><th>Состояние</th><th>Значение</th></tr>
+    <tr><td><span class="dot" style="display:inline-block"></span> не начата</td><td>Книга ещё не переводилась.</td></tr>
+    <tr><td><span class="dot half" style="display:inline-block"></span> собран английский EPUB</td><td>PDF размечен, можно выбирать главы.</td></tr>
+    <tr><td><span class="dot run" style="display:inline-block"></span> в процессе</td><td>Книга переводится сейчас.</td></tr>
+    <tr><td><span class="dot run" style="display:inline-block"></span> в очереди</td><td>Задача ждёт окончания текущего перевода.</td></tr>
+    <tr><td><span class="dot failed" style="display:inline-block"></span> прерван</td><td>Перевод начат и не завершён. Кнопка «Повторить» продолжает его с места остановки.</td></tr>
+    <tr><td><span class="dot half" style="display:inline-block"></span> переведена частично</td><td>Переведены не все главы. Сколько именно, показано рядом;
+      переведённые главы отмечены в списке глав.</td></tr>
+    <tr><td><span class="dot done" style="display:inline-block"></span> переведена</td><td>Переведены все главы.</td></tr>
+  </table>
+
+  <h3>Кнопки задач</h3>
+  <table class="t">
+    <tr><th>Кнопка</th><th>Действие</th></tr>
+    <tr><td>Стоп</td><td>Остановить перевод. Сделанное сохраняется.</td></tr>
+    <tr><td>Повторить</td><td>Продолжить остановленный или прерванный перевод.</td></tr>
+    <tr><td>Ещё раз</td><td>Перевести заново. Готовый перевод будет заменён.</td></tr>
+    <tr><td>Абзацы</td><td>Оригинал и перевод рядом, а также список абзацев, оставшихся на английском.</td></tr>
+  </table>
+
+  <h3>Строка состояния</h3>
+  <table class="t">
+    <tr><th>Надпись</th><th>Значение</th></tr>
+    <tr><td>GPU</td><td>Загрузка видеокарты. Во время перевода близка к 100% — это нормально. Подсказка при наведении показывает
+      занятую видеопамять и модель. Жёлтый — модель не поместилась в видеопамять целиком, перевод идёт в несколько раз медленнее:
+      закройте программы, которые используют GPU. Красный — сервис перевода (Ollama) не отвечает.</td></tr>
+    <tr><td>CPU</td><td>Загрузка процессора процессами перевода. Высокая во время разметки PDF.</td></tr>
+    <tr><td>RAM</td><td>Память, выделенная Docker (лимит задан в <code>.wslconfig</code>). Жёлтый — больше 85%, красный — больше 95%:
+      перевод может прерваться из-за нехватки памяти, закройте разметку PDF или другие контейнеры.</td></tr>
+  </table>
+
+  <h3>Результаты</h3>
+  <p>Файлы сохраняются в папку <code>books</code> (меню значка в трее: «Папка с результатами»):
+  для EPUB — в <code>books/&lt;имя книги&gt;</code>, для PDF — в <code>books/&lt;имя книги&gt;_epub</code>.</p>
+  <table class="t">
+    <tr><th>Файл</th><th>Содержимое</th></tr>
+    <tr><td>&lt;имя&gt;_ru.epub</td><td>Перевод.</td></tr>
+    <tr><td>&lt;имя&gt;_qa.txt</td><td>Отчёт проверки: совпадение кода, рисунков и таблиц с оригиналом, непереведённые абзацы.</td></tr>
+    <tr><td>&lt;имя&gt;.epub</td><td>Для PDF: английский EPUB, собранный из PDF.</td></tr>
+  </table>
+
+  <h3>Неполадки</h3>
+  <table class="t">
+    <tr><th>Ситуация</th><th>Что делать</th></tr>
+    <tr><td>Задача завершилась ошибкой</td><td>Откройте лог задачи: причина указана в строке «ОШИБКА». Обычно помогает «Повторить».</td></tr>
+    <tr><td>Книга не ставится в очередь</td><td>Эта книга уже переводится или ждёт в очереди.</td></tr>
+    <tr><td>Перевод идёт медленно</td><td>Проверьте строку состояния: шкала GPU не должна быть жёлтой.</td></tr>
+    <tr><td>Нужен PDF с исходной вёрсткой</td><td>Этот режим запускается только командой:
+      <code>docker.exe compose run --rm translate-pdf книга.pdf programming</code></td></tr>
+    <tr><td>Приложение не запускается</td><td>Журнал запуска: <code>%LOCALAPPDATA%\BookTranslate\launcher.log</code></td></tr>
+  </table>
+</section>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg-head">
+    <div class="dlg-modes">
+      <button class="small on" data-mode="pairs">Переведённые абзацы</button>
+      <button class="small" data-mode="untr">Остались на английском</button>
+    </div>
+    <label id="badrow" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="badonly"> только с повтором или ошибкой меток</label>
+    <span class="meta" id="dlgcount"></span>
+    <span style="margin-left:auto;display:flex;gap:6px">
+      <button class="small" id="prev">←</button><button class="small" id="next">→</button>
+      <button class="small" id="close">Закрыть</button>
+    </span>
+  </div>
+  <div class="pairs" id="pairs"></div>
+  <div class="untr" id="untr" hidden></div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const STATUS = {queued:'в очереди', running:'идёт', done:'готово', failed:'ошибка', stopped:'остановлено', interrupted:'прервано', cancelled:'убрано'};
+const STAGES_EPUB = ['Глоссарий','Подготовка книги','Перевод','Восстановление разметки','Термины и оглавление','Проверка','Готово'];
+const STAGES_PDF = ['Разметка Docling','Сборка английского EPUB', ...STAGES_EPUB];
+let BOOKS = [], OPTS = null, lastSig = '', pairsState = {job: null, offset: 0, limit: 50};
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const ct = r.headers.get('content-type') || '';
+  const data = ct.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) throw new Error(data.error || data || r.status);
+  return data;
+}
+const fmtTime = t => t ? new Date(t * 1000).toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) : '';
+const fmtDur = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s/3600), m = Math.floor(s%3600/60); return h ? `${h} ч ${m} мин` : `${m} мин`; };
+const fmtSize = n => n > 1048576 ? (n/1048576).toFixed(1) + ' МБ' : Math.max(1, Math.round(n/1024)) + ' КБ';
+
+// ---------- форма ----------
+const plural = (n, one, few, many) => {
+  const m10 = n % 10, m100 = n % 100;
+  return `${n} ${m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many}`;
+};
+const STATE_TEXT = {'не начата': 'ещё не переводилась', 'переведена': 'переведена', 'переведена частично': 'переведена частично',
+                    'собран английский EPUB': 'размечена, не переведена', 'прерван — можно продолжить': 'перевод прерван',
+                    'в процессе': 'в процессе', 'в очереди': 'в очереди'};
+const stateText = b => b.state === 'переведена частично' && b.coverage
+  ? `переведена частично: ${b.coverage.done} из ${plural(b.coverage.total, 'главы', 'глав', 'глав')}` : (STATE_TEXT[b.state] || b.state);
+let scope = 'all', shownBook = null, shownChapters = '', lastChk = null;
+
+function renderForm() {
+  const inp = $('#book');
+  if (!BOOKS.some(b => b.file === inp.value)) inp.value = BOOKS.length ? BOOKS[0].file : '';
+  onBook();
+}
+function setScope(s) {
+  scope = s;
+  $('#scope').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.scope === s));
+  $('#scope-chapters').hidden = s !== 'chapters';
+  $('#scope-pages').hidden = s !== 'pages';
+  chHint();
+}
+function onBook() {
+  const b = BOOKS.find(x => x.file === $('#book').value);
+  $('#bookname').textContent = b ? b.file : 'Папка source пуста: скопируйте туда книгу (.epub или .pdf)';
+  $('#bookname').classList.toggle('none', !b);
+  if (!b) { $('#bookinfo').textContent = ''; return; }
+  const isPdf = b.ext === 'pdf';
+  $('#bookinfo').textContent = (isPdf ? `PDF · ${plural(b.pages ?? 0, 'страница', 'страницы', 'страниц')}`
+                                      : `EPUB · ${plural(b.chapters.length, 'глава', 'главы', 'глав')}`) + ' · ' + stateText(b);
+  const pagesBtn = $('#scope button[data-scope=pages]');
+  pagesBtn.disabled = !isPdf;
+  pagesBtn.title = isPdf ? '' : 'У EPUB нет страниц — выберите главы';
+  $('#enonlyrow').hidden = !isPdf;
+  if (b.file !== shownBook) {                       // другая книга — сбросить выбор
+    shownBook = b.file; shownChapters = '';
+    if (isPdf && b.pages) { $('#pfrom').value = 1; $('#pto').value = b.pages; }
+    if (!isPdf && scope === 'pages') setScope('all');
+  }
+  if (isPdf && b.pages) { $('#pfrom').max = $('#pto').max = b.pages; $('#ptotal').textContent = `из ${b.pages}`; }
+  const done = new Set(b.coverage ? b.coverage.translated : []);
+  const sig = JSON.stringify([b.chapters, [...done]]);
+  if (sig !== shownChapters) {                      // список глав перестраивается только если он изменился
+    const was = new Set([...$('#chapters').querySelectorAll('input:checked')].map(i => i.value));
+    shownChapters = sig;
+    $('#chapters').innerHTML = b.chapters.length
+      ? b.chapters.map(([f, t], i) => `<label title="${esc(f)}"><input type="checkbox" value="${esc(f)}" data-i="${i}" ${was.has(f) ? 'checked' : ''}>
+          <span class="num">${i + 1}.</span><span>${esc(t)}</span>${done.has(f) ? '<span class="ok" title="Глава уже переведена">✓ переведена</span>' : ''}</label>`).join('')
+      : `<div class="hint" style="padding:6px 0">${isPdf ? 'Главы появятся после разметки PDF. Её можно запустить отдельно: «Всю книгу» + «Только разметить PDF».' : 'В книге не найдено глав.'}</div>`;
+  }
+  chHint();
+  $('#bookgloss').textContent = b.glossary ? `Словарь книги source/${b.name}.glossary.csv подключится автоматически.` : '';
+}
+function chHint() {
+  const n = $('#chapters').querySelectorAll('input:checked').length;
+  $('#chhint').textContent = n ? `Отмечено: ${plural(n, 'глава', 'главы', 'глав')}.` : 'Отметьте главы для перевода.';
+}
+$('#scope').addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.disabled) setScope(b.dataset.scope); });
+$('#chapters').addEventListener('mousedown', e => { if (e.shiftKey) e.preventDefault(); });   // без выделения текста
+$('#chapters').addEventListener('click', e => {         // Shift+щелчок — отметить диапазон
+  const cb = e.target.closest('input[type=checkbox]'); if (!cb) return;
+  const i = +cb.dataset.i;
+  if (e.shiftKey && lastChk !== null) {
+    const [a, z] = [Math.min(i, lastChk), Math.max(i, lastChk)];
+    $('#chapters').querySelectorAll('input').forEach(x => { if (+x.dataset.i >= a && +x.dataset.i <= z) x.checked = cb.checked; });
+  }
+  lastChk = i; chHint();
+});
+$('#chall').onclick = () => { $('#chapters').querySelectorAll('input').forEach(i => i.checked = true); chHint(); };
+$('#chnone').onclick = () => { $('#chapters').querySelectorAll('input').forEach(i => i.checked = false); chHint(); };
+function renderOptions() {
+  const base = OPTS.glossaries.find(g => g.always);
+  $('#gloss').innerHTML = OPTS.glossaries.filter(g => !g.always).map(g =>
+    `<label><input type="checkbox" value="${esc(g.name)}"> ${esc(g.name)}<span class="n">${plural(g.terms, 'термин', 'термина', 'терминов')}</span></label>`).join('')
+    || '<div class="hint">Других глоссариев нет.</div>';
+  $('#glossbase').textContent = `Общий словарь base (${plural(base ? base.terms : 0, 'термин', 'термина', 'терминов')}) подключается всегда.`;
+  $('#model').innerHTML = OPTS.models.map(m => `<option ${m === OPTS.default_model ? 'selected' : ''}>${esc(m)}</option>`).join('');
+}
+$('#start').onclick = async () => {
+  $('#err').textContent = '';
+  const b = BOOKS.find(x => x.file === $('#book').value);
+  if (!b) return;
+  const body = {book: b.file, model: $('#model').value,
+                domains: [...$('#gloss').querySelectorAll('input:checked')].map(i => i.value)};
+  if (scope === 'chapters') {
+    body.only = [...$('#chapters').querySelectorAll('input:checked')].map(i => i.value);
+    if (!body.only.length) { $('#err').textContent = 'Отметьте хотя бы одну главу.'; return; }
+  }
+  if (scope === 'pages') body.pages = `${$('#pfrom').value}-${$('#pto').value}`;
+  if (b.ext === 'pdf') body.en_only = $('#enonly').checked;
+  try { await api('/api/jobs', {method: 'POST', body: JSON.stringify(body)}); refresh(); }
+  catch (e) { $('#err').textContent = e.message; }
+};
+
+// ---------- задачи ----------
+function describe(j) {
+  const parts = [j.mode === 'pdf-epub' ? 'PDF → EPUB' : 'EPUB', j.model];
+  if (j.pages) parts.push('стр. ' + j.pages);
+  if (j.only.length) parts.push(plural(j.only.length, 'глава', 'главы', 'глав'));
+  if (j.en_only) parts.push('только разметка');
+  parts.push('глоссарии: base' + (j.domains.length ? ', ' + j.domains.join(', ') : ''));
+  return parts.join(' · ');
+}
+function files(j) {
+  if (!j.outputs || !j.outputs.length) return '';
+  return '<div class="files">' + j.outputs.map(f => `<a href="${f.url}" target="_blank">${esc(f.name)} · ${fmtSize(f.size)}</a>`).join('') + '</div>';
+}
+function jobActions(j) {
+  const a = [];
+  if (j.status === 'running' || j.status === 'queued') a.push(`<button class="small danger" data-stop="${j.id}">${j.status === 'running' ? 'Стоп' : 'Убрать'}</button>`);
+  if (['failed','stopped','interrupted','cancelled','done'].includes(j.status)) a.push(`<button class="small" data-retry="${j.id}">${j.status === 'done' ? 'Ещё раз' : 'Повторить'}</button>`);
+  if (j.model.startsWith('rosetta') && j.status !== 'queued' && !j.en_only) a.push(`<button class="small" data-pairs="${j.id}">Абзацы</button>`);
+  return `<span class="actions">${a.join('')}</span>`;
+}
+// Текущая задача: карточка строится один раз, дальше меняются только числа — без перерисовки и прыжков
+let curId = null;
+function renderCurrent(j) {
+  const box = $('#current');
+  if (!j) {
+    if (curId !== '') { box.innerHTML = '<div class="empty">Ничего не переводится.</div>'; curId = ''; }
+    return;
+  }
+  const list = j.mode === 'pdf-epub' ? (j.en_only ? STAGES_PDF.slice(0, 2) : STAGES_PDF) : STAGES_EPUB;
+  if (curId !== j.id) {
+    curId = j.id;
+    box.innerHTML = `<div class="job">
+      <div class="top"><span class="title">${esc(j.book)}</span><span class="status running" id="curdur"></span>${jobActions(j)}</div>
+      <div class="meta">${esc(describe(j))}</div>
+      <div class="bar"><div id="curbar"></div></div>
+      <div class="meta" id="curline"></div>
+      <div class="stages" id="curstages">${list.map(s => `<span>${esc(s)}</span>`).join('')}</div>
+      <details id="logbox" ${localStorage.getItem('logOpen') === '1' ? 'open' : ''}><summary>лог</summary><pre class="log" id="log"></pre></details>
+    </div>`;
+    $('#logbox').addEventListener('toggle', e => { try { localStorage.setItem('logOpen', e.target.open ? '1' : '0'); } catch (_) {} if (e.target.open) loadLog(j.id); });
+  }
+  const p = j.progress || {}, ci = list.indexOf(p.stage);
+  let pct = 0, line = p.stage || 'запуск…';
+  if (p.stage === 'Разметка Docling' && p.docling) {
+    pct = 100 * p.docling[0] / p.docling[1];
+    line = `Разметка PDF: часть ${p.docling[0]} из ${p.docling[1]}` + (p.docling[2] != null ? `, осталось ~${p.docling[2]} мин` : '');
+  } else if (p.total && p.done != null) {
+    pct = 100 * p.done / p.total;
+    line = `Перевод: ${p.done} из ~${p.total} абзацев` + (p.per_min ? ` · ${p.per_min} в минуту` : '') + (p.eta_min != null ? ` · осталось ~${fmtDur(p.eta_min * 60)}` : '');
+  } else if (ci >= 0) pct = 100 * ci / list.length;
+  $('#curdur').textContent = 'идёт ' + fmtDur(Date.now() / 1000 - j.started);
+  $('#curbar').style.width = pct.toFixed(1) + '%';
+  if ($('#curline').textContent !== line) $('#curline').textContent = line;
+  $('#curstages').querySelectorAll('span').forEach((el, i) => { el.className = i === ci ? 'cur' : i < ci ? 'past' : ''; });
+  if ($('#logbox').open) loadLog(j.id);
+}
+async function loadLog(id) {
+  try {
+    const t = (await api(`/api/jobs/${id}/log?bytes=20000`)).split('\n').slice(-150).join('\n');
+    const el = $('#log'); if (!el || el.textContent === t) return;
+    const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+    const keep = el.scrollTop;
+    el.textContent = t;
+    el.scrollTop = atEnd ? el.scrollHeight : keep;
+  } catch (_) {}
+}
+const listSig = {};
+function renderList(sel, list, empty) {
+  // список перерисовывается только когда в нём что-то поменялось (статус, заметка, файлы)
+  const sig = JSON.stringify(list.map(j => [j.id, j.status, j.note, (j.outputs || []).map(o => o.name + o.size)]));
+  if (listSig[sel] === sig) return;
+  listSig[sel] = sig;
+  const open = new Set([...document.querySelectorAll(`${sel} details[open] pre`)].map(p => p.dataset.log));
+  $(sel).innerHTML = list.length ? list.map(j => `<div class="job">
+    <div class="top"><span class="title">${esc(j.book)}</span><span class="status ${j.status}">${STATUS[j.status] || j.status}</span>${jobActions(j)}</div>
+    <div class="meta">${esc(describe(j))}</div>
+    <div class="meta">${fmtTime(j.created)}${j.started && j.finished ? ' · заняло ' + fmtDur(j.finished - j.started) : ''}</div>
+    ${j.note ? `<div class="note">${esc(j.note)}</div>` : ''}
+    ${files(j)}
+    ${j.status !== 'queued' ? `<details ${open.has(j.id) ? 'open' : ''}><summary>лог</summary><pre class="log" data-log="${j.id}"></pre></details>` : ''}
+  </div>`).join('') : `<div class="empty">${empty}</div>`;
+  $(sel).querySelectorAll('details').forEach(d => {
+    const load = async () => { const pre = d.querySelector('pre'); if (d.open && pre) pre.textContent = (await api(`/api/jobs/${pre.dataset.log}/log?bytes=20000`)).split('\n').slice(-150).join('\n'); };
+    d.addEventListener('toggle', load); if (d.open) load();
+  });
+}
+const stCls = st => st === 'переведена' ? 'done' : st.startsWith('прерван') ? 'failed' : st === 'не начата' ? ''
+                  : st === 'в процессе' || st === 'в очереди' ? 'run' : 'half';
+function renderBooks() {
+  const q = ($('#bookfilter').value || '').toLowerCase(), cur = $('#book').value;
+  const open = new Set([...document.querySelectorAll('#books details[open]')].map(d => d.dataset.book));
+  const list = BOOKS.filter(b => !q || b.file.toLowerCase().includes(q));
+  const keep = $('#books').scrollTop;
+  $('#books').innerHTML = list.length ? list.map(b => `
+    <div class="book ${b.file === cur ? 'sel' : ''}" data-book="${esc(b.file)}" title="${esc(b.file)}">
+      <div class="bn">${esc(b.file)}</div>
+      <div class="bm"><span class="dot ${stCls(b.state)}"></span><span class="st ${stCls(b.state)}">${esc(stateText(b))}</span>
+        <span class="fmt">${b.ext === 'pdf' ? `PDF, ${b.pages ?? '?'} стр.` : `EPUB, ${plural(b.chapters.length, 'глава', 'главы', 'глав')}`}</span></div>
+    </div>
+    ${b.outputs.length ? `<details class="bookfiles" data-book="${esc(b.file)}" ${open.has(b.file) ? 'open' : ''}><summary>файлы (${b.outputs.length})</summary>${files(b)}</details>` : ''}`).join('')
+    : `<div class="empty">${BOOKS.length ? 'Ничего не найдено.' : 'Скопируйте книгу (.epub или .pdf) в папку source.'}</div>`;
+  $('#books').scrollTop = keep;
+}
+$('#bookfilter').addEventListener('input', renderBooks);
+$('#books').addEventListener('click', e => {
+  const row = e.target.closest('.book'); if (!row) return;
+  $('#book').value = row.dataset.book; onBook(); renderBooks();
+});
+
+async function refresh() {
+  try {
+    const jobs = await api('/api/jobs');
+    const sig = jobs.map(j => j.id + j.status).join();
+    if (sig !== lastSig) { lastSig = sig; refreshBooks(); }      // задача началась/закончилась — обновить список книг
+    renderCurrent(jobs.find(j => j.status === 'running'));
+    renderList('#queue', jobs.filter(j => j.status === 'queued').reverse(), 'Пусто.');
+    renderList('#history', jobs.filter(j => !['queued','running'].includes(j.status)).slice(0, 30), 'Пока ничего.');
+  } catch (e) { curId = null; $('#current').innerHTML = `<div class="err">Нет связи с интерфейсом: ${esc(e.message)}</div>`; }
+}
+let booksSig = '';
+async function refreshBooks() {
+  try {
+    const b = await api('/api/books'), sig = JSON.stringify(b);
+    if (sig === booksSig) return;                     // ничего не поменялось — не трогаем страницу
+    booksSig = sig; BOOKS = b; renderForm(); renderBooks();
+    if (!$('#viewtab').hidden) initView();             // вкладка «Просмотр» могла открыться раньше, чем загрузился список
+  } catch (_) {}
+}
+// ---------- строка состояния: модель, GPU, CPU, RAM ----------
+const gb = n => (n / 1073741824).toFixed(1).replace('.', ',') + ' ГБ';
+function meter(id, pct, level, tip) {
+  const el = $(id);
+  el.className = 'meter' + (pct == null ? ' na' : level ? ' ' + level : '');
+  el.querySelector('u').style.width = (pct == null ? 0 : Math.min(100, pct)) + '%';
+  el.querySelector('span').textContent = pct == null ? '—' : pct + '%';
+  el.title = tip;
+}
+async function refreshStatus() {
+  let s;
+  try { s = await api('/api/status'); }
+  catch (_) { ['#s-gpu', '#s-cpu', '#s-ram'].forEach(id => meter(id, null, '', 'Интерфейс не отвечает')); return; }
+  // GPU: загрузка из nvidia-smi; жёлтый — модель не поместилась в видеопамять, красный — Ollama не отвечает
+  const m = (s.ollama || []).find(x => !/embed/i.test(x.name)), g = s.gpu || {};
+  const mname = m ? m.name.replace(':latest', '') : '';
+  const tip = [`Загрузка GPU ${g.pct ?? '—'}%`];
+  if (g.mem_total) tip.push(`видеопамять ${gb(g.mem_used)} из ${gb(g.mem_total)}`);
+  let lvl = '';
+  if (s.ollama === null) { lvl = 'bad'; tip.push('Ollama не отвечает — перевод невозможен'); }
+  else if (!m) tip.push('модель не загружена, загрузится при запуске перевода');
+  else if (m.gpu < 100) { lvl = 'warn'; tip.push(`модель ${mname} только на ${m.gpu}% в видеопамяти — перевод идёт в несколько раз медленнее; закройте программы, которые используют GPU`); }
+  else tip.push(`модель ${mname} целиком в видеопамяти`);
+  meter('#s-gpu', g.pct ?? null, lvl, tip.join(' · '));
+  if (lvl) $('#s-gpu').classList.remove('na');
+  meter('#s-cpu', s.cpu, s.cpu >= 95 ? 'warn' : '', s.cpu == null ? 'Нет данных' : `Загрузка процессора (${s.cores} потоков) процессами перевода в Docker`);
+  const r = s.ram;
+  meter('#s-ram', r ? r.pct : null, r && r.pct >= 95 ? 'bad' : r && r.pct >= 85 ? 'warn' : '',
+        r ? `Память Docker: ${gb(r.used)} из ${gb(r.total)} (лимит задан в .wslconfig). При нехватке перевод может прерваться` : 'Нет данных');
+}
+document.addEventListener('click', async e => {
+  const t = e.target;
+  try {
+    if (t.dataset.stop) { if (confirm('Остановить перевод? Продолжить его можно кнопкой «Повторить».')) await api(`/api/jobs/${t.dataset.stop}/stop`, {method: 'POST'}); refresh(); }
+    if (t.dataset.retry) {
+      if (t.textContent === 'Ещё раз' && !confirm('Перевести заново? Готовый перевод этой книги будет заменён.')) return;
+      await api(`/api/jobs/${t.dataset.retry}/retry`, {method: 'POST'}); refresh();
+    }
+    if (t.dataset.pairs) openPairs(t.dataset.pairs);
+  } catch (err) { alert(err.message); }
+});
+
+// ---------- абзацы: перевод рядом с оригиналом и оставшиеся на английском ----------
+const markHtml = s => esc(s).replace(/⟦(\w+?)(\d+)⟧/g, '<span class="mark">$1$2</span>');
+let dlgMode = 'pairs';
+function setDlgMode(m) {
+  dlgMode = m;
+  document.querySelectorAll('.dlg-modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  $('#pairs').hidden = m !== 'pairs'; $('#untr').hidden = m !== 'untr';
+  $('#badrow').hidden = $('#prev').hidden = $('#next').hidden = m !== 'pairs';
+  m === 'pairs' ? loadPairs() : loadUntr();
+}
+document.querySelectorAll('.dlg-modes button').forEach(b => b.onclick = () => setDlgMode(b.dataset.mode));
+async function openPairs(id) { pairsState = {job: id, offset: 0, limit: 50}; $('#dlg').showModal(); setDlgMode('pairs'); }
+async function loadPairs() {
+  const {job, offset, limit} = pairsState;
+  const d = await api(`/api/jobs/${job}/pairs?offset=${offset}&limit=${limit}&bad=${$('#badonly').checked ? 1 : 0}`);
+  $('#dlgcount').textContent = d.total ? `${offset + 1}–${Math.min(offset + limit, d.total)} из ${d.total}` : 'пока пусто';
+  $('#pairs').innerHTML = d.rows.map(r => `<div class="pair ${r.marks_ok === false || r.retries ? 'bad' : ''}">
+    <div class="n">${r.n}${r.retries ? '<br>повтор' : ''}</div><div>${markHtml(r.src)}</div><div>${markHtml(r.out)}</div></div>`).join('');
+  pairsState.total = d.total;
+}
+async function loadUntr() {
+  const d = await api(`/api/jobs/${pairsState.job}/untranslated`);
+  if (!d.ready) { $('#dlgcount').textContent = ''; $('#untr').innerHTML = '<div class="empty" style="padding:12px 0">Список появится после окончания перевода.</div>'; return; }
+  $('#dlgcount').textContent = d.rows.length ? plural(d.rows.length, 'абзац', 'абзаца', 'абзацев') : '';
+  $('#untr').innerHTML = d.rows.length
+    ? '<div class="hint" style="margin:8px 0">Абзацы перевода без русских букв. Обычно это имена классов, адреса и команды — их переводить не нужно. Предметный указатель не переводится и здесь не показан.</div>'
+      + d.rows.map(r => `<div class="row1"><div class="f">${esc(r.file)}</div><div>${esc(r.text)}</div></div>`).join('')
+    : '<div class="empty" style="padding:12px 0">Непереведённых абзацев нет.</div>';
+}
+$('#close').onclick = () => $('#dlg').close();
+$('#prev').onclick = () => { pairsState.offset = Math.max(0, pairsState.offset - pairsState.limit); loadPairs(); };
+$('#next').onclick = () => { if (pairsState.offset + pairsState.limit < pairsState.total) { pairsState.offset += pairsState.limit; loadPairs(); } };
+$('#badonly').onchange = () => { pairsState.offset = 0; loadPairs(); };
+
+
+// ---------- история ----------
+$('#clearhist').onclick = async () => {
+  if (!confirm('Удалить все завершённые задачи из истории? Переведённые книги и их файлы останутся.')) return;
+  try { await api('/api/history/clear', {method: 'POST'}); listSig['#history'] = null; refresh(); } catch (e) { alert(e.message); }
+};
+
+// ---------- просмотр: оригинал и перевод рядом ----------
+let VIEW = {book: null, chapters: []}, syncing = false;
+function initView() {
+  const books = BOOKS.filter(b => b.viewable !== false);
+  const sel = $('#vbook'), cur = sel.value || $('#book').value;
+  sel.innerHTML = books.length ? books.map(b => `<option value="${esc(b.file)}">${esc(b.file)}</option>`).join('')
+                               : '<option value="">нет книг для просмотра</option>';
+  if (books.some(b => b.file === cur)) sel.value = cur;
+  if (sel.value !== VIEW.book) loadViewBook(sel.value);
+}
+async function loadViewBook(book) {
+  VIEW = {book, chapters: []};
+  $('#vch').innerHTML = '';
+  if (!book) { showChapter(-1); return; }
+  try { VIEW = {book, ...(await api('/api/view/' + encodeURIComponent(book)))}; } catch (e) { alert(e.message); return; }
+  $('#vch').innerHTML = VIEW.chapters.map((c, i) => `<option value="${i}">${i + 1}. ${esc(c.title)}${c.ru ? '' : ' (нет перевода)'}</option>`).join('');
+  const first = VIEW.chapters.findIndex(c => c.ru);
+  $('#vch').value = String(Math.max(0, first));
+  showChapter(+$('#vch').value);
+}
+function showChapter(i) {
+  const c = VIEW.chapters[i], url = (side, m) => `/epub/${side}/${encodeURIComponent(VIEW.book)}/${m.split('/').map(encodeURIComponent).join('/')}`;
+  $('#ven').src = c ? url('en', c.en) : 'about:blank';
+  const ru = c && c.ru;
+  $('#vru').hidden = !ru; $('#vrunone').hidden = !!ru;
+  if (ru) $('#vru').src = url('ru', c.ru);
+  else $('#vrunone').textContent = !c ? '' : VIEW.has_ru ? 'Эта глава ещё не переведена.' : 'Книга ещё не переведена.';
+  $('#vprev').disabled = !c || i <= 0; $('#vnext').disabled = !c || i >= VIEW.chapters.length - 1;
+}
+function hookScroll(a, b) {
+  // прокрутка одной стороны двигает другую на ту же долю главы
+  a.addEventListener('load', () => {
+    const w = a.contentWindow; if (!w) return;
+    w.addEventListener('scroll', () => {
+      if (!$('#vsync').checked || syncing || b.hidden) return;
+      const da = w.document.documentElement, wb = b.contentWindow; if (!wb) return;
+      const db = wb.document.documentElement, k = da.scrollTop / Math.max(1, da.scrollHeight - da.clientHeight);
+      syncing = true; wb.scrollTo(0, k * (db.scrollHeight - db.clientHeight)); setTimeout(() => syncing = false, 50);
+    });
+  });
+}
+hookScroll($('#ven'), $('#vru')); hookScroll($('#vru'), $('#ven'));
+$('#vbook').onchange = () => loadViewBook($('#vbook').value);
+$('#vch').onchange = () => showChapter(+$('#vch').value);
+$('#vprev').onclick = () => { $('#vch').value = String(+$('#vch').value - 1); showChapter(+$('#vch').value); };
+$('#vnext').onclick = () => { $('#vch').value = String(+$('#vch').value + 1); showChapter(+$('#vch').value); };
+
+function showTab(t) {
+  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  $('main').hidden = t !== 'work'; $('#help').hidden = t !== 'help';
+  $('#historytab').hidden = t !== 'history'; $('#viewtab').hidden = t !== 'view';
+  if (t === 'view') initView();
+  try { localStorage.setItem('tab', t); } catch (_) {}
+}
+document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+(async () => {
+  try { showTab(localStorage.getItem('tab') || 'work'); } catch (_) {}
+  try { OPTS = await api('/api/options'); renderOptions(); } catch (e) { $('#err').textContent = e.message; }
+  await refreshBooks(); refresh(); refreshStatus();
+  setInterval(refresh, 3000); setInterval(refreshStatus, 3000); setInterval(refreshBooks, 30000);
+})();
+</script>
+</body>
+</html>
