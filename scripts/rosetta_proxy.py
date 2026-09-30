@@ -25,6 +25,8 @@ a.add_argument('--target', default='http://ollama:11434')
 a.add_argument('--log', default='/books/eval/rosetta_log.jsonl')
 a.add_argument('--context', default='A technical book about software development.')
 a.add_argument('--tone', default='Clear, natural technical prose, as in a professionally edited book.')
+a.add_argument('--senses', help='карта смыслов книги (.senses.json от scripts/senses.py)')
+a.add_argument('--senses-rules', default='/config/senses.csv')
 args = a.parse_args()
 lock = threading.Lock()
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -43,6 +45,47 @@ def marks(t):
 def fix_marks(src, out):
     names = {m.group(2): m.group(1) for m in MARK.finditer(src)}
     return ANY_MARK.sub(lambda m: '⟦%s%s⟧' % (names.get(m.group(2), m.group(1) or 'code'), m.group(2)), out)
+
+
+# Смысл многозначных терминов (feature, transformer, recall…): карта строится до перевода по всей книге
+# (scripts/senses.py), здесь по абзацу берётся решение: свой перевод / перевод другого смысла / не подсказывать.
+SMAP, SRULES = {}, {}
+if args.senses:
+    try:
+        import os, sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import senses as _senses
+        SMAP = json.load(open(args.senses, encoding='utf-8'))
+        SRULES = {w: r['forms'] for w, r in _senses.load_senses(args.senses_rules).items()}
+    except Exception as e:                       # без карты адаптер работает как раньше
+        print('rosetta_proxy: карта смыслов не загружена: %s' % e, flush=True)
+        SMAP, SRULES = {}, {}
+
+
+def apply_senses(src, terms):
+    """Возвращает (термины, изменения, слова без решения). Изменения: [слово, 'alt'|'none', перевод]."""
+    if not SRULES:
+        return terms, [], []
+    entry = _senses.lookup(SMAP, _senses.key(src))
+    changes, missing, out = [], [], []
+    for t in terms:
+        w = next((w for w, rx in SRULES.items() if rx.fullmatch(t[0])), None)
+        if w is None:
+            out.append(t)
+            continue
+        if entry is None or w not in entry:
+            missing.append(w)
+            out.append(t)
+            continue
+        kind, tgt = entry[w]
+        if kind == 'own':
+            out.append(t)
+        elif kind == 'alt' and tgt:
+            out.append((t[0], tgt))
+            changes.append([w, 'alt', tgt])
+        else:
+            changes.append([w, 'none', None])
+    return out, changes, missing
 
 
 def case_ok(term, src):
@@ -146,6 +189,7 @@ class H(http.server.BaseHTTPRequestHandler):
         # Термин с заглавными буквами (название) передаём модели, только если он есть в тексте в точности так же.
         dropped = [t for t in terms if not case_ok(t[0], src)]
         terms = [t for t in terms if case_ok(t[0], src)]
+        terms, senses_changed, senses_missing = apply_senses(src, terms)
         system = system_prompt(terms, bool(MARK.search(src)))
         tries = []
         for temp in (q.get('temperature', 0.2), 0.0):
@@ -163,7 +207,8 @@ class H(http.server.BaseHTTPRequestHandler):
         content = json.dumps({'ru_translation': best['out']}, ensure_ascii=False) if 'ru_translation' in fmt else best['out']
         self._send(200, json.dumps(reply(content, model), ensure_ascii=False).encode())
         with lock, open(args.log, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({'src': src, 'terms': terms, 'dropped': dropped, 'out': best['out'], 'marks_ok': best['marks_ok'],
+            f.write(json.dumps({'src': src, 'terms': terms, 'dropped': dropped, 'senses': senses_changed,
+                                'senses_missing': senses_missing, 'out': best['out'], 'marks_ok': best['marks_ok'],
                                 'json': best['json'], 'retries': len(tries) - 1,
                                 'raw': [t['raw'] for t in tries]}, ensure_ascii=False) + '\n')
 

@@ -32,7 +32,7 @@ if [ -f "$W/.work.temp.bin" ] && [ -f "$WORKBOOK" ]; then
     log "2/6 Найден прерванный перевод — продолжаю с места остановки"
 else
     log "2/6 Подготовка книги"
-    rm -f "$W/.rosetta_log.jsonl"         # журнал адаптера — только для этого перевода
+    rm -f "$W/.rosetta_log.jsonl" "$W/.senses.json"   # журнал адаптера и карта смыслов — только для этого перевода
     python "$SCRIPTS/prep_epub.py" "$ORIG" "$WORKBOOK"
 fi
 
@@ -44,7 +44,14 @@ SKIP=$(python "$SCRIPTS/prep_epub.py" --index-files "$WORKBOOK")
 API_URL="$OLLAMA_URL"
 case "$MODEL" in
     rosetta*)
-        python "$SCRIPTS/rosetta_proxy.py" --listen 127.0.0.1:8083 --target "$OLLAMA_URL" --log "$W/.rosetta_log.jsonl" &
+        # смысл многозначных терминов по контексту (feature, transformer, recall…) — карта по всей книге до перевода
+        if [ ! -f "$W/.senses.json" ] && [ -f "$CONFIG/senses.csv" ]; then
+            python "$SCRIPTS/senses.py" "$WORKBOOK" "$W/.senses.json" --rules "$CONFIG/senses.csv" \
+                --glossary-dir "$CONFIG/glossary" --domains "$DOMAINS" || log "    Карта смыслов не построена — термины как в глоссарии"
+        fi
+        set --
+        [ -f "$W/.senses.json" ] && set -- --senses "$W/.senses.json" --senses-rules "$CONFIG/senses.csv"
+        python "$SCRIPTS/rosetta_proxy.py" --listen 127.0.0.1:8083 --target "$OLLAMA_URL" --log "$W/.rosetta_log.jsonl" "$@" &
         PROXY_PID=$!
         trap 'kill $PROXY_PID 2>/dev/null || true' EXIT
         for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -87,6 +94,10 @@ import json, sys
 L = [json.loads(l) for l in open(sys.argv[1], encoding='utf-8')]
 bad = sum(not r['marks_ok'] for r in L); rep = sum(r['retries'] for r in L); nj = sum(not r['json'] for r in L)
 print('\nАдаптер Rosetta: абзацев %d, повторов %d, метки не сошлись %d, ответ не JSON %d' % (len(L), rep, bad, nj))
+alt = sum(1 for r in L for c in r.get('senses', []) if c[1] == 'alt'); no = sum(1 for r in L for c in r.get('senses', []) if c[1] == 'none')
+miss = sum(1 for r in L if r.get('senses_missing'))
+if alt or no or miss:
+    print('Смысл по контексту: другой перевод %d, не подсказано %d, абзац не найден в карте %d' % (alt, no, miss))
 " "$W/.rosetta_log.jsonl" >> "$QA"
 fi
 cat "$QA"

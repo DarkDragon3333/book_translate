@@ -19,7 +19,9 @@ test_books/*
 !test_books/testbook.epub
 !test_books/testbook.pdf
 !test_books/testbook_src/
+!test_books/eval_prog/
 test_books/testbook_src/*.tex
 test_books/testbook_src/*.aux
 test_books/testbook_src/*.log
 test_books/testbook_src/*.toc
+!test_books/eval_prog/eval_prog.epub
