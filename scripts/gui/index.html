@@ -280,7 +280,10 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <li>Скопируйте книгу в папку <code>source</code>. Открыть её можно из меню значка в трее: «Папка с книгами».</li>
     <li>Выберите книгу в списке «Книги».</li>
     <li>Укажите, что переводить: всю книгу, отдельные главы или диапазон страниц (только для PDF).</li>
-    <li>Отметьте глоссарии по теме книги.</li>
+    <li>Дождитесь автоопределения глоссариев: надпись «Подбираю глоссарии по тексту книги…» сменится на
+      «Подобрано по тексту книги: …» и галочки встанут сами (у большой книги — до минуты). Если поставить задачу раньше,
+      в перевод попадут только те области, которые отмечены в этот момент.</li>
+    <li>Проверьте глоссарии и при необходимости измените галочки.</li>
     <li>Нажмите «Поставить в очередь». Ход работы показан в разделе «Сейчас».</li>
   </ol>
   <table class="t">
@@ -301,10 +304,13 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <tr><td>Вся книга</td><td>Перевод всех глав, кроме предметного указателя.</td></tr>
     <tr><td>Главы</td><td>Перевод отмеченных глав. Удобно для пробы. У PDF список глав появляется после разметки книги
       (можно запустить её отдельно: «Только разметить PDF»).</td></tr>
-    <tr><td>Страницы</td><td>Перевод диапазона страниц PDF. Результат сохраняется в отдельную папку.</td></tr>
+    <tr><td>Страницы</td><td>Перевод диапазона страниц PDF. Результат сохраняется в отдельную папку
+      (<code>books/&lt;имя книги&gt;_epub_p1-40</code>) и не мешает переводу всей книги. В списке книг такая часть
+      показана как «переведены стр. 1–40», во вкладке «Просмотр» — отдельной строкой.</td></tr>
     <tr><td>Глоссарии</td><td>Словари терминов. Общий словарь <code>base</code> подключается всегда. Области
       (<code>programming</code>, <code>distributed</code>, <code>security</code>, <code>ml</code>, <code>math</code>) приложение
-      подбирает само по тексту книги, когда книга выбрана (у большой книги — до минуты); галочки можно изменить.
+      подбирает само по тексту книги, когда книга выбрана (у большой книги — до минуты). Ставить книгу в очередь стоит
+      после подбора, иначе области не подключатся. Галочки можно изменить.
       Под каждой отмеченной областью показаны её частые слова в этой книге и их перевод: он будет применён во всей книге.
       Жёлтая строка — область не похожа на тему книги, и её слова, скорее всего, здесь значат другое
       (например, <code>feature</code> в книге по Java — не «признак»). Словарь отдельной книги —
@@ -324,6 +330,8 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <tr><td><span class="dot run" style="display:inline-block"></span> в процессе</td><td>Книга переводится сейчас.</td></tr>
     <tr><td><span class="dot run" style="display:inline-block"></span> в очереди</td><td>Задача ждёт окончания текущего перевода.</td></tr>
     <tr><td><span class="dot failed" style="display:inline-block"></span> прерван</td><td>Перевод начат и не завершён. Кнопка «Повторить» продолжает его с места остановки.</td></tr>
+    <tr><td><span class="dot half" style="display:inline-block"></span> переведены стр. …</td><td>Переведена только часть PDF по страницам,
+      вся книга ещё не переводилась.</td></tr>
     <tr><td><span class="dot half" style="display:inline-block"></span> переведена частично</td><td>Переведены не все главы. Сколько именно, показано рядом;
       переведённые главы отмечены в списке глав.</td></tr>
     <tr><td><span class="dot done" style="display:inline-block"></span> переведена</td><td>Переведены все главы.</td></tr>
@@ -344,7 +352,7 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <tr><td>GPU</td><td>Загрузка видеокарты. Во время перевода близка к 100% — это нормально. Подсказка при наведении показывает
       занятую видеопамять и модель. Жёлтый — модель не поместилась в видеопамять целиком, перевод идёт в несколько раз медленнее:
       закройте программы, которые используют GPU. Красный — сервис перевода (Ollama) не отвечает.</td></tr>
-    <tr><td>CPU</td><td>Загрузка процессора процессами перевода. Высокая во время разметки PDF.</td></tr>
+    <tr><td>CPU</td><td>Нагрузка на процессор. Высокая во время разметки PDF.</td></tr>
     <tr><td>RAM</td><td>Память, выделенная Docker (лимит задан в <code>.wslconfig</code>). Жёлтый — больше 85%, красный — больше 95%:
       перевод может прерваться из-за нехватки памяти, закройте разметку PDF или другие контейнеры.</td></tr>
   </table>
@@ -357,6 +365,28 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <tr><td>&lt;имя&gt;_ru.epub</td><td>Перевод.</td></tr>
     <tr><td>&lt;имя&gt;_qa.txt</td><td>Отчёт проверки: совпадение кода, рисунков и таблиц с оригиналом, непереведённые абзацы.</td></tr>
     <tr><td>&lt;имя&gt;.epub</td><td>Для PDF: английский EPUB, собранный из PDF.</td></tr>
+  </table>
+
+  <h3>Удаление</h3>
+  <table class="t">
+    <tr><th>Что удалить</th><th>Как</th></tr>
+    <tr><td>Перевод книги</td><td>Удалите папку книги в <code>books</code>: <code>books/&lt;имя книги&gt;</code> для EPUB,
+      <code>books/&lt;имя книги&gt;_epub</code> для PDF (пробные прогоны страниц — <code>…_epub_p&lt;страницы&gt;</code>).
+      Книга останется в списке как «не начата». Для PDF вместе с папкой удаляется и разметка: следующий перевод разметит книгу заново.</td></tr>
+    <tr><td>Книгу из списка</td><td>Удалите файл книги из папки <code>source</code> (и её словарь <code>&lt;имя книги&gt;.glossary.csv</code>, если есть).</td></tr>
+    <tr><td>Записи истории</td><td>Кнопка «Очистить историю» во вкладке «История». Книги и переводы остаются.</td></tr>
+    <tr><td>Приложение целиком</td><td>
+      <ol>
+        <li>Сохраните нужные книги из <code>source</code> и переводы из <code>books</code> в другое место.</li>
+        <li>Значок в трее → «Остановить всё и выйти».</li>
+        <li>В PowerShell удалите контейнеры, образы и модели (≈ 30 ГБ), затем ярлыки:
+          <pre class="log">cd C:\book_translate
+docker.exe compose --profile cli --profile gui --profile docling --profile pdf down --rmi all -v --remove-orphans
+powershell -ExecutionPolicy Bypass -File app\install.ps1 -Remove</pre></li>
+        <li>Верните место на диске C: — Docker само его не освобождает. PowerShell <b>от имени администратора</b>:
+          <pre class="log">powershell -ExecutionPolicy Bypass -File C:\book_translate\app\compact-docker.ps1</pre></li>
+        <li>Удалите папку <code>C:\book_translate</code>.</li>
+      </ol></td></tr>
   </table>
 
   <h3>Неполадки</h3>
@@ -417,7 +447,9 @@ const STATE_TEXT = {'не начата': 'ещё не переводилась',
                     'собран английский EPUB': 'размечена, не переведена', 'прерван — можно продолжить': 'перевод прерван',
                     'в процессе': 'в процессе', 'в очереди': 'в очереди'};
 const stateText = b => b.state === 'переведена частично' && b.coverage
-  ? `переведена частично: ${b.coverage.done} из ${plural(b.coverage.total, 'главы', 'глав', 'глав')}` : (STATE_TEXT[b.state] || b.state);
+  ? `переведена частично: ${b.coverage.done} из ${plural(b.coverage.total, 'главы', 'глав', 'глав')}`
+  : b.state === 'переведены страницы' ? `переведены стр. ${(b.page_runs || []).map(p => p.replace('-', '–')).join(', ')}`
+  : (STATE_TEXT[b.state] || b.state);
 let scope = 'all', shownBook = null, shownChapters = '', lastChk = null;
 
 function renderForm() {
@@ -459,7 +491,7 @@ function onBook() {
     $('#chapters').innerHTML = b.chapters.length
       ? b.chapters.map(([f, t], i) => `<label title="${esc(f)}"><input type="checkbox" value="${esc(f)}" data-i="${i}" ${was.has(f) ? 'checked' : ''}>
           <span class="num">${i + 1}.</span><span>${esc(t)}</span>${done.has(f) ? '<span class="ok" title="Глава уже переведена">✓ переведена</span>' : ''}</label>`).join('')
-      : `<div class="hint" style="padding:6px 0">${isPdf ? 'Главы появятся после разметки PDF. Её можно запустить отдельно: «Всю книгу» + «Только разметить PDF».' : 'В книге не найдено глав.'}</div>`;
+      : `<div class="hint" style="padding:6px 0">${isPdf ? 'Главы появятся после разметки PDF: отметьте «Только разметить PDF, без перевода» и нажмите «Поставить в очередь».' : 'В книге не найдено глав.'}</div>`;
   }
   chHint();
   $('#bookgloss').textContent = b.glossary ? `Словарь книги source/${b.name}.glossary.csv подключится автоматически.` : '';
@@ -534,7 +566,8 @@ $('#start').onclick = async () => {
   if (!b) return;
   const body = {book: b.file, model: $('#model').value,
                 domains: [...$('#gloss').querySelectorAll('input:checked')].map(i => i.value)};
-  if (scope === 'chapters') {
+  const markupOnly = b.ext === 'pdf' && $('#enonly').checked;
+  if (scope === 'chapters' && !markupOnly) {       // разметка PDF — всегда всей книги, главы для неё не нужны
     body.only = [...$('#chapters').querySelectorAll('input:checked')].map(i => i.value);
     if (!body.only.length) { $('#err').textContent = 'Отметьте хотя бы одну главу.'; return; }
   }
@@ -697,7 +730,7 @@ async function refreshStatus() {
   else tip.push(`модель ${mname} целиком в видеопамяти`);
   meter('#s-gpu', g.pct ?? null, lvl, tip.join(' · '));
   if (lvl) $('#s-gpu').classList.remove('na');
-  meter('#s-cpu', s.cpu, s.cpu >= 95 ? 'warn' : '', s.cpu == null ? 'Нет данных' : `Загрузка процессора (${s.cores} потоков) процессами перевода в Docker`);
+  meter('#s-cpu', s.cpu, s.cpu >= 95 ? 'warn' : '', 'Нагрузка на процессор');
   const r = s.ram;
   meter('#s-ram', r ? r.pct : null, r && r.pct >= 95 ? 'bad' : r && r.pct >= 85 ? 'warn' : '',
         r ? `Память Docker: ${gb(r.used)} из ${gb(r.total)} (лимит задан в .wslconfig). При нехватке перевод может прерваться` : 'Нет данных');
@@ -758,11 +791,16 @@ $('#clearhist').onclick = async () => {
 // ---------- просмотр: оригинал и перевод рядом ----------
 let VIEW = {book: null, chapters: []}, syncing = false;
 function initView() {
-  const books = BOOKS.filter(b => b.viewable !== false);
-  const sel = $('#vbook'), cur = sel.value || $('#book').value;
-  sel.innerHTML = books.length ? books.map(b => `<option value="${esc(b.file)}">${esc(b.file)}</option>`).join('')
+  // вся книга и отдельно каждая часть PDF, переведённая по страницам (значение «книга.pdf@1-40»)
+  const views = BOOKS.flatMap(b => b.views || []);
+  const sel = $('#vbook'), prev = sel.value, pick = $('#book').value;
+  sel.innerHTML = views.length ? views.map(v => `<option value="${esc(v.id)}">${esc(v.label)}</option>`).join('')
                                : '<option value="">нет книг для просмотра</option>';
-  if (books.some(b => b.file === cur)) sel.value = cur;
+  const has = id => views.some(v => v.id === id);
+  const part = views.find(v => v.id.startsWith(pick + '@'));
+  if (prev && has(prev)) sel.value = prev;
+  else if (has(pick)) sel.value = pick;
+  else if (part) sel.value = part.id;
   if (sel.value !== VIEW.book) loadViewBook(sel.value);
 }
 async function loadViewBook(book) {

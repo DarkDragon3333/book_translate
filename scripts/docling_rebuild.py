@@ -487,6 +487,7 @@ class Builder:
         self.pic_no = 0
         self.head_levels = Counter()
         self.ad_pages = set()     # страницы с рекламой: картинки на них (QR-код канала) тоже выбрасываются
+        self.toc_cache = {}       # страница → похожа на оглавление (toc_like)
         self.skip_mode = None     # 'toc' — печатное оглавление (выбрасывается), 'index' — предметный указатель
         self.skip_chars = []
         self.skip_pages = set()
@@ -595,7 +596,8 @@ class Builder:
         bt = self.big_text(ref)
         name = (bt or '').lower()
         if (self.skip_mode and bt and len(re.findall(r'[A-Za-z]', bt)) >= 4
-                and not (self.skip_mode == 'toc' and name in TOC_NAMES)):
+                and not (self.skip_mode == 'toc' and name in TOC_NAMES)
+                and not (self.skip_mode == 'toc' and self.toc_like(ref))):
             self.end_skip()
         if not self.skip_mode and name in TOC_NAMES:
             self.skip_mode = 'toc'
@@ -612,6 +614,23 @@ class Builder:
             self.collect(ref)
             return True
         return False
+
+    def toc_like(self, ref):
+        """Крупная строка на странице оглавления («PART 4 DEPLOYED SPRING ....385») — ещё оглавление, а не начало
+        книги: на такой странице больше половины строк кончаются номером страницы (Spring in Action 30.09:
+        оглавление 0.55–0.88, текст книги 0–0.2)."""
+        pages = self.pages_of(self.bk.node(ref))
+        if not pages:
+            return False
+        pg = pages[0]
+        if pg not in self.toc_cache:
+            try:
+                lines = [l for l in (self.bk.pdf.pages[pg - 1].extract_text() or '').splitlines() if l.strip()]
+            except Exception:
+                lines = []
+            ends = sum(1 for l in lines if re.search(r'\d+\s*$', l))
+            self.toc_cache[pg] = len(lines) >= 5 and ends >= 0.5 * len(lines)
+        return self.toc_cache[pg]
 
     def end_skip(self):
         mode, chars, pages = self.skip_mode, self.skip_chars, sorted(self.skip_pages)

@@ -135,12 +135,32 @@ def outputs(w):
     return res
 
 
-def en_epub(name, ext):
-    return os.path.join(SOURCE, name + '.epub') if ext == 'epub' else os.path.join(workdir(name, ext), name + '.epub')
+def en_epub(name, ext, pages=''):
+    return os.path.join(SOURCE, name + '.epub') if ext == 'epub' else os.path.join(workdir(name, ext, pages), name + '.epub')
 
 
-def ru_epub(name, ext):
-    return os.path.join(workdir(name, ext), name + '_ru.epub')
+def ru_epub(name, ext, pages=''):
+    return os.path.join(workdir(name, ext, pages), name + '_ru.epub')
+
+
+def page_runs(name, ext):
+    """Переводы части PDF по страницам: [(страницы '1-40', папка)] — books/<имя>_epub_p1-40 и т. п."""
+    if ext != 'pdf' or not os.path.isdir(BOOKS):
+        return []
+    pre = name + '_epub_p'
+    res = []
+    for d in os.listdir(BOOKS):
+        if d.startswith(pre) and re.fullmatch(r'\d+-\d+', d[len(pre):]) and os.path.isdir(os.path.join(BOOKS, d)):
+            res.append((d[len(pre):], os.path.join(BOOKS, d)))
+    return sorted(res, key=lambda r: tuple(map(int, r[0].split('-'))))
+
+
+def split_run(s):
+    """'книга.pdf@1-40' → ('книга.pdf', '1-40'): часть книги по страницам в «Просмотре»."""
+    b, at, p = s.rpartition('@')
+    if at and re.fullmatch(r'\d+-\d+', p):
+        return b, p
+    return s, ''
 
 
 def _chapter_texts(path):
@@ -186,7 +206,7 @@ def coverage(name, ext):
     return _cov_cache[name][1]
 
 
-def book_state(name, ext):
+def book_state(name, ext, runs=()):
     with lock:
         act = {x['status'] for x in jobs if x['book'] == name + '.' + ext and x['status'] in ('queued', 'running')}
     if 'running' in act:
@@ -201,6 +221,10 @@ def book_state(name, ext):
         if cov and cov['total'] and cov['done'] < cov['total']:
             return 'переведена частично'
         return 'переведена'
+    if any(os.path.isfile(os.path.join(rw, name + '_ru.epub')) for _, rw in runs):
+        return 'переведены страницы'          # переведена только часть PDF по страницам (отдельная папка)
+    if any(os.path.isfile(os.path.join(rw, '.work.temp.bin')) for _, rw in runs):
+        return 'прерван — можно продолжить'
     if ext == 'pdf' and os.path.isfile(os.path.join(w, name + '.epub')):
         return 'собран английский EPUB'
     return 'не начата'
@@ -214,7 +238,8 @@ def books():
         if not dot or ext not in ('epub', 'pdf'):
             continue
         path = os.path.join(SOURCE, f)
-        b = {'file': f, 'name': name, 'ext': ext, 'size': os.path.getsize(path), 'state': book_state(name, ext),
+        runs = page_runs(name, ext)
+        b = {'file': f, 'name': name, 'ext': ext, 'size': os.path.getsize(path), 'state': book_state(name, ext, runs),
              'glossary': os.path.isfile(os.path.join(SOURCE, name + '.glossary.csv'))}
         w = workdir(name, ext)
         if ext == 'pdf':
@@ -223,12 +248,17 @@ def books():
             b['chapters'] = epub_chapters(en) if os.path.isfile(en) else []
         else:
             b['chapters'] = epub_chapters(path)
-        b['outputs'] = outputs(w)
+        # файлы и «Просмотр»: основная папка и части по страницам
+        b['outputs'] = outputs(w) + [dict(o, name='стр. %s · %s' % (p, o['name'])) for p, rw in runs for o in outputs(rw)]
+        b['page_runs'] = [p for p, rw in runs if os.path.isfile(os.path.join(rw, name + '_ru.epub'))]
         cov = coverage(name, ext) if b['state'].startswith('переведена') else None
         if cov:
             b['coverage'] = {'done': cov['done'], 'total': cov['total'],
                              'translated': [f for f, ok in cov['files'].items() if ok]}
-        b['viewable'] = os.path.isfile(en_epub(name, ext))
+        b['views'] = ([{'id': f, 'label': f}] if os.path.isfile(en_epub(name, ext)) else []) + \
+                     [{'id': f + '@' + p, 'label': '%s · стр. %s' % (f, p.replace('-', '–'))}
+                      for p, rw in runs if os.path.isfile(os.path.join(rw, name + '.epub'))]
+        b['viewable'] = bool(b['views'])
         res.append(b)
     return res
 
@@ -822,10 +852,12 @@ def _members(path):
 
 
 def view_info(book):
+    book, pages = split_run(book)
     b = next((x for x in books() if x['file'] == book), None)
     if not b:
         raise ValueError('Нет такой книги')
-    en, ru = en_epub(b['name'], b['ext']), ru_epub(b['name'], b['ext'])
+    pages = pages if b['ext'] == 'pdf' else ''
+    en, ru = en_epub(b['name'], b['ext'], pages), ru_epub(b['name'], b['ext'], pages)
     if not os.path.isfile(en):
         return {'chapters': [], 'has_ru': False}
     E = _members(en)
@@ -837,11 +869,13 @@ def view_info(book):
 
 def epub_file(side, book, member):
     """Файл из EPUB оригинала или перевода — чтобы окно просмотра показывало главы с картинками и стилями книги."""
+    book, pages = split_run(book)
     name, _, ext = book.rpartition('.')
     ext = ext.lower()
     if not name or '/' in book or ext not in ('epub', 'pdf') or not os.path.isfile(os.path.join(SOURCE, book)):
         return None
-    path = en_epub(name, ext) if side == 'en' else ru_epub(name, ext)
+    pages = pages if ext == 'pdf' else ''
+    path = en_epub(name, ext, pages) if side == 'en' else ru_epub(name, ext, pages)
     if not os.path.isfile(path):
         return None
     try:
