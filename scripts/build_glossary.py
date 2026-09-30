@@ -8,6 +8,9 @@
                      в pdf2zh пары-тождества путали модель
   source/<книга>.glossary.csv — необязательный словарь конкретной книги
 При совпадении терминов побеждает более поздний файл (область > base, книга > область).
+Для bbm к каждому термину добавляется английское множественное число с тем же переводом
+(bbm ищет термин точной формой целым словом: «neural network» не срабатывает на «neural networks»;
+перевод в именительном падеже единственного числа модель склоняет сама).
 
   python build_glossary.py --format bbm|pdf2zh --dir config/glossary --domains ml,math [--extra book.csv] [--out file]
 """
@@ -19,7 +22,33 @@ def read(path):
         for row in csv.DictReader(f):
             s, t = (row.get('source') or '').strip(), (row.get('target') or '').strip()
             if s and t and not s.startswith('#'):
+                if '#' in s or '#' in t:     # bbm считает «#» началом комментария: строка с ним роняет перевод
+                    print('    Пропущен термин с «#»: %s' % s, file=sys.stderr)
+                    continue
                 yield s, t
+
+
+IRREGULAR = {'matrix': ['matrices'], 'index': ['indexes', 'indices'], 'vertex': ['vertices'], 'hypothesis': ['hypotheses'],
+             'analysis': ['analyses'], 'axis': ['axes'], 'criterion': ['criteria'], 'leaf': ['leaves'], 'child': ['children'],
+             'basis': ['bases'], 'datum': ['data'], 'appendix': ['appendices'], 'phenomenon': ['phenomena']}
+UNCOUNTABLE = {'data', 'software', 'hardware', 'feedback', 'information', 'knowledge', 'research', 'evidence',
+               'code', 'middleware', 'malware', 'ransomware', 'overhead', 'metadata', 'bandwidth', 'throughput'}
+
+
+def plurals(term):
+    """Английские формы множественного числа последнего слова термина: cache miss → cache misses."""
+    head, sep, last = term.rpartition(' ')
+    if not last.isalpha() or not last.islower() or last in UNCOUNTABLE or len(last) < 3:
+        return []
+    if last in IRREGULAR:
+        forms = IRREGULAR[last]
+    elif last.endswith(('s', 'x', 'z', 'ch', 'sh')):
+        forms = [last + 'es']
+    elif last.endswith('y') and last[-2] not in 'aeiou':
+        forms = [last[:-1] + 'ies']
+    else:
+        forms = [last + 's']
+    return [head + sep + f for f in forms]
 
 
 def main():
@@ -50,6 +79,15 @@ def main():
                 conflicts.append('%s: «%s» → «%s» (%s)' % (s, terms[key][1], t, os.path.basename(f)))
             terms[key] = (s, t)
 
+    n_terms = len(terms)
+    if a.format == 'bbm':
+        keep = {s.lower() for s, _ in read(os.path.join(a.dir, 'keep.csv'))}
+        for key, (s, t) in list(terms.items()):
+            if key in keep:
+                continue
+            for p in plurals(s):
+                terms.setdefault(p.lower(), (p, t))
+
     out = io.StringIO()
     if a.format == 'bbm':
         for s, t in terms.values():
@@ -67,7 +105,8 @@ def main():
     else:
         sys.stdout.write(text)
     extra = ' + ' + os.path.basename(a.extra) if a.extra and os.path.isfile(a.extra) else ''
-    print('    Терминов: %d (%s%s)' % (len(terms), ', '.join(domains), extra), file=sys.stderr)
+    forms = ' + %d форм мн. ч.' % (len(terms) - n_terms) if len(terms) > n_terms else ''
+    print('    Терминов: %d%s (%s%s)' % (n_terms, forms, ', '.join(domains), extra), file=sys.stderr)
     for c in conflicts:
         print('    Переопределён: ' + c, file=sys.stderr)
 

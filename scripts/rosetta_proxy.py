@@ -45,6 +45,13 @@ def fix_marks(src, out):
     return ANY_MARK.sub(lambda m: '⟦%s%s⟧' % (names.get(m.group(2), m.group(1) or 'code'), m.group(2)), out)
 
 
+def case_ok(term, src):
+    """Термин без заглавных букв совпадает в любом регистре, с заглавными — только точно (целым словом)."""
+    if term == term.lower():
+        return True
+    return re.search(r'(?<!\w)' + re.escape(term) + r'(?!\w)', src) is not None
+
+
 def system_prompt(terms, has_marks):
     s = ["Translate the user's text to Russian.", 'Context: ' + args.context, 'Tone: ' + args.tone]
     if terms:
@@ -135,6 +142,10 @@ class H(http.server.BaseHTTPRequestHandler):
         src = m.group(1)
         g = GLOSS.search(last)
         terms = [tuple(x.split(' → ', 1)) for x in g.group(1).split('\n') if ' → ' in x] if g else []
+        # bbm ищет термины без учёта регистра: «Windows» сработал бы на «context windows», «Spark» — на «spark».
+        # Термин с заглавными буквами (название) передаём модели, только если он есть в тексте в точности так же.
+        dropped = [t for t in terms if not case_ok(t[0], src)]
+        terms = [t for t in terms if case_ok(t[0], src)]
         system = system_prompt(terms, bool(MARK.search(src)))
         tries = []
         for temp in (q.get('temperature', 0.2), 0.0):
@@ -152,7 +163,7 @@ class H(http.server.BaseHTTPRequestHandler):
         content = json.dumps({'ru_translation': best['out']}, ensure_ascii=False) if 'ru_translation' in fmt else best['out']
         self._send(200, json.dumps(reply(content, model), ensure_ascii=False).encode())
         with lock, open(args.log, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({'src': src, 'terms': terms, 'out': best['out'], 'marks_ok': best['marks_ok'],
+            f.write(json.dumps({'src': src, 'terms': terms, 'dropped': dropped, 'out': best['out'], 'marks_ok': best['marks_ok'],
                                 'json': best['json'], 'retries': len(tries) - 1,
                                 'raw': [t['raw'] for t in tries]}, ensure_ascii=False) + '\n')
 
