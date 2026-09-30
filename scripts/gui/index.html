@@ -105,6 +105,9 @@ select, input[type=text], input[type=number] { width: 100%; padding: 7px 9px; bo
 input[type=number] { width: 90px; }
 .checks label { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
 .checks .n { color: var(--muted); font-size: 12px; margin-left: auto; }
+.checks .why { color: var(--muted); font-size: 11.5px; margin: -2px 0 5px 24px; line-height: 1.35; }
+.checks .why.off { color: var(--warn); }
+#glosshint.ok { color: var(--text); }
 .chapters { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; }
 .chapters label { display: flex; gap: 8px; padding: 2px 0; font-size: 13px; user-select: none; -webkit-user-select: none; }
 .chapters .f { color: var(--muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
@@ -211,6 +214,7 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
 
       <div class="row">Глоссарии</div>
       <div class="checks" id="gloss"></div>
+      <div class="hint" id="glosshint"></div>
       <div class="hint" id="glossbase"></div>
       <div class="hint" id="bookgloss"></div>
 
@@ -299,9 +303,12 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
       (можно запустить её отдельно: «Только разметить PDF»).</td></tr>
     <tr><td>Страницы</td><td>Перевод диапазона страниц PDF. Результат сохраняется в отдельную папку.</td></tr>
     <tr><td>Глоссарии</td><td>Словари терминов. Общий словарь <code>base</code> подключается всегда. Области
-      (<code>programming</code>, <code>distributed</code>, <code>security</code>, <code>ml</code>, <code>math</code>) выбираются по теме книги: один и тот же термин в разных
-      областях переводится по-разному. Словарь отдельной книги — файл <code>source/&lt;имя книги&gt;.glossary.csv</code>,
-      он подключается автоматически.</td></tr>
+      (<code>programming</code>, <code>distributed</code>, <code>security</code>, <code>ml</code>, <code>math</code>) приложение
+      подбирает само по тексту книги, когда книга выбрана (у большой книги — до минуты); галочки можно изменить.
+      Под каждой отмеченной областью показаны её частые слова в этой книге и их перевод: он будет применён во всей книге.
+      Жёлтая строка — область не похожа на тему книги, и её слова, скорее всего, здесь значат другое
+      (например, <code>feature</code> в книге по Java — не «признак»). Словарь отдельной книги —
+      файл <code>source/&lt;имя книги&gt;.glossary.csv</code>, он подключается автоматически и главнее областей.</td></tr>
     <tr><td>Модель</td><td><code>rosetta-ru</code> (YanoljaNEXT-Rosetta-4B) — модель по умолчанию. Обучена переводить с глоссарием;
       в сравнительных тестах точнее соблюдает термины и пишет более естественным языком.<br>
       <code>translategemma-gpu</code> (Google TranslateGemma-4B) — вторая модель с другим характером ошибок. Её стоит выбрать,
@@ -439,6 +446,7 @@ function onBook() {
   $('#enonlyrow').hidden = !isPdf;
   if (b.file !== shownBook) {                       // другая книга — сбросить выбор
     shownBook = b.file; shownChapters = '';
+    glossTouched = false; DETECT = null; loadDetect(b.file);
     if (isPdf && b.pages) { $('#pfrom').value = 1; $('#pto').value = b.pages; }
     if (!isPdf && scope === 'pages') setScope('all');
   }
@@ -473,11 +481,50 @@ $('#chapters').addEventListener('click', e => {         // Shift+щелчок �
 });
 $('#chall').onclick = () => { $('#chapters').querySelectorAll('input').forEach(i => i.checked = true); chHint(); };
 $('#chnone').onclick = () => { $('#chapters').querySelectorAll('input').forEach(i => i.checked = false); chHint(); };
+// ---------- подсказка областей глоссария по тексту книги ----------
+let DETECT = null, glossTouched = false, detectTimer = null;
+async function loadDetect(book) {
+  clearTimeout(detectTimer);
+  $('#glosshint').className = 'hint';
+  $('#glosshint').textContent = 'Подбираю глоссарии по тексту книги…';
+  renderGlossNotes();
+  let d;
+  try { d = await api('/api/detect/' + encodeURIComponent(book)); }
+  catch (e) { if (book === shownBook) $('#glosshint').textContent = ''; return; }
+  if (book !== shownBook) return;                   // пока считали, выбрали другую книгу
+  if (d.status !== 'ready') { detectTimer = setTimeout(() => loadDetect(book), 3000); return; }
+  DETECT = d;
+  if (!glossTouched) $('#gloss').querySelectorAll('input').forEach(i => i.checked = d.suggest.includes(i.value));
+  $('#glosshint').className = 'hint ok';
+  $('#glosshint').textContent = d.suggest.length
+    ? `Подобрано по тексту книги: ${d.suggest.join(', ')}.` + (glossTouched ? ' Галочки не менялись: вы уже выбрали сами.' : '')
+    : 'По тексту книги подходит только общий словарь base.';
+  renderGlossNotes();
+}
+function renderGlossNotes() {
+  // под каждой отмеченной областью — её частые однословные термины в этой книге: их перевод будет навязан везде
+  $('#gloss').querySelectorAll('.why').forEach(e => e.remove());
+  if (!DETECT) return;
+  $('#gloss').querySelectorAll('label').forEach(l => {
+    const cb = l.querySelector('input'), x = DETECT.domains[cb.value];
+    if (!cb.checked || !x) return;
+    const top = x.top_single.map(t => `${t.term} ${t.count} → ${t.target}`).join(', ');
+    const div = document.createElement('div');
+    div.className = 'why' + (x.suggest ? '' : ' off');
+    div.textContent = (x.suggest ? '' : 'Не похоже на тему книги. ') + (top ? 'Частые в книге: ' + top : 'Терминов этой области в книге почти нет.');
+    div.title = 'Эти слова будут переведены так во всей книге. Если в книге они значат другое — снимите область или переопределите слово в словаре книги.';
+    l.after(div);
+  });
+}
+$('#gloss').addEventListener('change', () => { glossTouched = true; renderGlossNotes(); });
+
 function renderOptions() {
   const base = OPTS.glossaries.find(g => g.always);
   $('#gloss').innerHTML = OPTS.glossaries.filter(g => !g.always).map(g =>
     `<label><input type="checkbox" value="${esc(g.name)}"> ${esc(g.name)}<span class="n">${plural(g.terms, 'термин', 'термина', 'терминов')}</span></label>`).join('')
     || '<div class="hint">Других глоссариев нет.</div>';
+  if (DETECT && !glossTouched) $('#gloss').querySelectorAll('input').forEach(i => i.checked = DETECT.suggest.includes(i.value));
+  renderGlossNotes();
   $('#glossbase').textContent = `Общий словарь base (${plural(base ? base.terms : 0, 'термин', 'термина', 'терминов')}) подключается всегда.`;
   $('#model').innerHTML = OPTS.models.map(m => `<option ${m === OPTS.default_model ? 'selected' : ''}>${esc(m)}</option>`).join('');
 }

@@ -247,6 +247,71 @@ def glossaries():
     return res
 
 
+# ---------------- подсказка областей глоссария ----------------
+# Считается в фоне (у большой книги 20–45 с на CPU), по одной книге за раз; результат кэшируется в books/.gui/detect
+# и пересчитывается, если изменились книга, её английский EPUB (для PDF) или глоссарии.
+DETECT_DIR = os.path.join(STATE, 'detect')
+detect_lock = threading.Lock()
+detect_running = set()
+
+
+def _detect_source(name, ext):
+    """Для PDF лучше полный текст собранного английского EPUB, если он уже есть; иначе выборка страниц PDF."""
+    if ext == 'pdf':
+        en = os.path.join(workdir(name, ext), name + '.epub')
+        if os.path.isfile(en):
+            return en
+    return os.path.join(SOURCE, name + '.' + ext)
+
+
+def _detect_key(path):
+    gdir = os.path.join(CONFIG, 'glossary')
+    g = sorted((f, os.path.getmtime(os.path.join(gdir, f))) for f in os.listdir(gdir) if f.endswith('.csv')) \
+        if os.path.isdir(gdir) else []
+    st = os.stat(path)
+    return json.dumps([path, st.st_mtime, st.st_size, g])
+
+
+def _detect_run(book, path, key, cache):
+    try:
+        if SCRIPTS not in sys.path:
+            sys.path.insert(0, SCRIPTS)
+        import detect_domains
+        with detect_lock:
+            r = detect_domains.detect(path, os.path.join(CONFIG, 'glossary'))
+        r['key'], r['from'] = key, os.path.basename(path)
+        os.makedirs(DETECT_DIR, exist_ok=True)
+        with open(cache + '.tmp', 'w', encoding='utf-8') as f:
+            json.dump(r, f, ensure_ascii=False)
+        os.replace(cache + '.tmp', cache)
+    except Exception as e:
+        print('подсказка областей для %s: %s' % (book, e), flush=True)
+    finally:
+        detect_running.discard(book)
+
+
+def detect(book):
+    name, _, ext = book.rpartition('.')
+    ext = ext.lower()
+    if not name or '/' in book or ext not in ('epub', 'pdf') or not os.path.isfile(os.path.join(SOURCE, book)):
+        raise ValueError('Нет такой книги')
+    path = _detect_source(name, ext)
+    key = _detect_key(path)
+    cache = os.path.join(DETECT_DIR, book + '.json')
+    try:
+        r = json.load(open(cache, encoding='utf-8'))
+        if r.get('key') == key:
+            r.pop('key', None)
+            r['status'] = 'ready'
+            return r
+    except (OSError, ValueError):
+        pass
+    if book not in detect_running:
+        detect_running.add(book)
+        threading.Thread(target=_detect_run, args=(book, path, key, cache), daemon=True).start()
+    return {'status': 'pending'}
+
+
 def http_json(url, data=None, timeout=3):
     req = urllib.request.Request(url, data=data, method='POST' if data is not None else 'GET',
                                  headers={'Content-Type': 'application/json'} if data is not None else {})
@@ -852,6 +917,9 @@ class H(BaseHTTPRequestHandler):
             if m:
                 return self.send(200, pairs(m.group(1), int(q.get('offset', ['0'])[0]), min(int(q.get('limit', ['50'])[0]), 200),
                                             q.get('bad', ['0'])[0] == '1'))
+            m = re.fullmatch(r'/api/detect/([^/]+)', u.path)
+            if m:
+                return self.send(200, detect(urllib.parse.unquote(m.group(1))))
             m = re.fullmatch(r'/api/view/([^/]+)', u.path)
             if m:
                 return self.send(200, view_info(urllib.parse.unquote(m.group(1))))
