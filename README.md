@@ -31,30 +31,86 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 
 ## Установка
 
-```
-git clone https://github.com/<user>/book_translate.git
-cd book_translate
-docker compose up -d
-```
+### Windows (приложение)
 
-При первом запуске скачиваются образы и модель. Готовность:
+Docker Desktop должен быть запущен. Из PowerShell:
+```
+git clone https://github.com/DarkDragon3333/book_translate.git C:\book_translate
+cd C:\book_translate
+powershell -ExecutionPolicy Bypass -File app\install.ps1
+```
+Установка скачивает всё, что нужно для EPUB и PDF → EPUB, чтобы первый перевод не ждал загрузок:
+образы Ollama, bilingual_book_maker и Docling (≈ 6 ГБ загрузки), собирает образ интерфейса и скачивает модели
+rosetta-ru и translategemma-gpu (≈ 6 ГБ). Прогресс виден в окне; на 10 МБ/с это ≈ 20–30 минут. В конце появляется
+ярлык «Перевод книг» на рабочем столе и в меню «Пуск». Если загрузка прервалась, запустите `install.ps1` ещё раз —
+он докачает недостающее. Только пересоздать ярлыки: ключ `-ShortcutsOnly`, удалить: `-Remove`.
+
+PDF → PDF (pdf2zh) ставится отдельно, только если нужен: `docker compose --profile pdf pull` и
+`docker compose --profile cli build translate-pdf` (≈ 7 ГБ).
+
+### Командами (Linux, Windows без приложения)
+
+```
+git clone https://github.com/DarkDragon3333/book_translate.git
+cd book_translate
+docker compose --profile cli pull --ignore-buildable   # образы, в том числе Docling (≈ 7,5 ГБ на диске)
+docker compose --profile cli build pdf-epub
+docker compose up -d                                   # Ollama; модели качаются в фоне
+docker compose logs -f ollama-init                     # ход загрузки моделей; Ctrl+C — выйти из лога
+```
+`up -d` возвращается сразу, модели (≈ 6 ГБ) качаются после. Готовность:
 ```
 docker compose ps -a              # ollama — healthy, ollama-init — Exited (0)
 docker compose logs ollama-init   # «Модель translategemma-gpu готова», «Модель rosetta-ru готова»
 ```
 
+### Удаление
+
+Из папки проекта (книги в `source` и результаты в `books` сохраните заранее):
+```
+docker compose --profile cli --profile gui --profile docling --profile pdf down --rmi all -v --remove-orphans
+powershell -ExecutionPolicy Bypass -File app\install.ps1 -Remove
+```
+Первая команда удаляет контейнеры, образы и тома проекта (модели, кэш pdf2zh). Место на диске C: при этом не возвращается — до удаления папки проекта запустите [сжатие диска Docker](#освободить-место-на-диске-windows), затем удалите папку.
+
+### Освободить место на диске (Windows)
+
+Docker Desktop хранит все образы, модели и тома в одном файле `docker_data.vhdx`
+(`%LOCALAPPDATA%\Docker\wsl\disk\`). Файл только растёт: после удаления или обновления образов, переустановки
+проекта место на диске C: не возвращается. Проверить: `docker system df` — сколько занято внутри Docker,
+размер файла — в проводнике.
+
+Сжать файл — PowerShell **от имени администратора**, приложение закрыто
+(значок в трее → «Остановить всё и выйти»):
+```
+powershell -ExecutionPolicy Bypass -File C:\book_translate\app\compact-docker.ps1
+```
+Образы, модели и тома (в том числе других проектов) не удаляются. Скрипт снимает временные блокировки слоёв
+удалённых образов (Docker держит их 8 часов), помечает свободное место (`fstrim`), закрывает Docker Desktop,
+сжимает файл (`diskpart`, работает и в Windows Домашней) и запускает Docker Desktop снова. Проверено 30.09.2026:
+после переустановки проекта файл 102 → 34 ГБ, свободно на C: 31 → 99 ГБ.
+
+То же вручную:
+```
+docker run --rm -v /run/containerd/containerd.sock:/run/containerd/containerd.sock alpine sh -c 'apk add -q containerd-ctr >/dev/null && ctr -n moby leases ls | grep gc.expire | while read id rest; do ctr -n moby leases rm --sync $id; done'
+docker run --rm --privileged --pid=host alpine nsenter -t 1 -m -- fstrim -av
+docker rmi alpine
+```
+Затем Docker Desktop → Quit, и в PowerShell администратора (путь — свой):
+```
+wsl --shutdown
+diskpart
+  select vdisk file="C:\Users\<имя>\AppData\Local\Docker\wsl\disk\docker_data.vhdx"
+  attach vdisk readonly
+  compact vdisk
+  detach vdisk
+  exit
+```
+
 ## Приложение для Windows
 
 Приложение — это ярлык «Перевод книг», значок в трее и окно интерфейса. Под капотом те же сервисы и скрипты,
-что и в [командах](#команды).
-
-### Ярлык
-
-Один раз, из папки проекта:
-```
-powershell -ExecutionPolicy Bypass -File app\install.ps1
-```
-Ярлык «Перевод книг» появится на рабочем столе и в меню «Пуск». Удалить ярлыки: тот же скрипт с ключом `-Remove`.
+что и в [командах](#команды). Ставится `app\install.ps1` (см. [Установка](#windows-приложение)).
 
 ### Запуск
 

@@ -598,9 +598,10 @@ def new_job(p):
 
 def run(j):
     if j['ext'] == 'pdf' and not os.path.isfile(os.path.join(j['workdir'], j['name'] + '.epub')):
-        # Docling включает значок в трее, когда в очереди есть PDF; ждём его до 5 минут
+        # Docling включает значок в трее, когда в очереди есть PDF. Обычно это секунды; до 30 минут — если образ
+        # не скачан заранее (установка без app\install.ps1) и docker compose качает его сейчас
         t0 = now()
-        while not system_status()['docling'] and now() - t0 < 300:
+        while not system_status()['docling'] and now() - t0 < 1800:
             with lock:
                 j['note'] = 'Жду запуска разметки PDF…'
             time.sleep(5)

@@ -192,15 +192,20 @@ $tray.add_DoubleClick({ Open-Window })
 $script:lastRunning = $null
 $script:running = $null
 $script:doclingIdleSince = $null
+$script:doclingBusy = $false
 
 # Docling нужен только для разметки PDF. Интерфейс сообщает, есть ли такие задачи (needs_docling);
 # включаем при необходимости, выключаем через 2 минуты простоя — иначе он держит память во время перевода.
 function Update-Docling($jobs) {
     try { $st = Invoke-RestMethod -Uri "$Url/api/status" -TimeoutSec 5 } catch { return }
     $need = @($jobs | Where-Object { $_.needs_docling }).Count -gt 0
+    if ($script:doclingBusy) { return }   # запуск ещё идёт: Invoke-Docker крутит DoEvents, таймер может сработать внутри
     if ($need -and -not $st.docling) {
         Log 'Docling нужен для PDF — запускаю'
-        Invoke-Docker @('compose', '--profile', 'docling', 'up', '-d', '--no-deps', 'docling') 180 | Out-Null
+        $script:doclingBusy = $true
+        # образ ставит app\install.ps1; если его нет (установка без install.ps1), up скачает ≈ 7,5 ГБ — ждём до 30 минут
+        try { Invoke-Docker @('compose', '--profile', 'docling', 'up', '-d', '--no-deps', 'docling') 1800 | Out-Null }
+        finally { $script:doclingBusy = $false }
         $script:doclingIdleSince = $null
     } elseif (-not $need -and $st.docling) {
         if (-not $script:doclingIdleSince) { $script:doclingIdleSince = Get-Date }
