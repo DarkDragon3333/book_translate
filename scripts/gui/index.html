@@ -231,7 +231,7 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
   <div class="bookscol">
     <section class="panel books">
       <div class="books-head"><h2>Книги</h2><input type="text" id="bookfilter" placeholder="поиск"></div>
-      <div id="books"></div>
+      <div id="books"><div class="empty">Загружаю список книг…</div></div>
     </section>
   </div>
 
@@ -428,7 +428,8 @@ const STAGES_PDF = ['Разметка Docling','Сборка английско�
 let BOOKS = [], OPTS = null, lastSig = '', pairsState = {job: null, offset: 0, limit: 50};
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  // таймаут: зависший запрос не должен держать страницу пустой (09.10)
+  const r = await fetch(path, Object.assign({signal: AbortSignal.timeout(30000)}, opts || {}));
   const ct = r.headers.get('content-type') || '';
   const data = ct.includes('json') ? await r.json() : await r.text();
   if (!r.ok) throw new Error(data.error || data || r.status);
@@ -579,7 +580,9 @@ $('#start').onclick = async () => {
 
 // ---------- задачи ----------
 function describe(j) {
-  const parts = [j.mode === 'pdf-epub' ? 'PDF → EPUB' : 'EPUB', j.model];
+  const kind = j.mode === 'pdf-epub' ? 'PDF → EPUB' : j.mode === 'pdf' ? 'PDF → PDF' : 'EPUB';
+  if (j.external) return ['запущен командой в PowerShell (лог и Ctrl+C — в том окне)', kind, j.model].filter(Boolean).join(' · ');
+  const parts = [kind, j.model];
   if (j.pages) parts.push('стр. ' + j.pages);
   if (j.only.length) parts.push(plural(j.only.length, 'глава', 'главы', 'глав'));
   if (j.en_only) parts.push('только разметка');
@@ -592,6 +595,10 @@ function files(j) {
 }
 function jobActions(j) {
   const a = [];
+  if (j.external) {          // перевод, запущенный командой: остановить и повторить можно только там же
+    if ((j.model || '').startsWith('rosetta')) a.push(`<button class="small" data-pairs="${j.id}">Абзацы</button>`);
+    return `<span class="actions">${a.join('')}</span>`;
+  }
   if (j.status === 'running' || j.status === 'queued') a.push(`<button class="small danger" data-stop="${j.id}">${j.status === 'running' ? 'Стоп' : 'Убрать'}</button>`);
   if (['failed','stopped','interrupted','cancelled','done'].includes(j.status)) a.push(`<button class="small" data-retry="${j.id}">${j.status === 'done' ? 'Ещё раз' : 'Повторить'}</button>`);
   if (j.model.startsWith('rosetta') && j.status !== 'queued' && !j.en_only) a.push(`<button class="small" data-pairs="${j.id}">Абзацы</button>`);
@@ -623,9 +630,13 @@ function renderCurrent(j) {
   if (p.stage === 'Разметка Docling' && p.docling) {
     pct = 100 * p.docling[0] / p.docling[1];
     line = `Разметка PDF: часть ${p.docling[0]} из ${p.docling[1]}` + (p.docling[2] != null ? `, осталось ~${p.docling[2]} мин` : '');
+  } else if (p.total && p.done != null && p.over) {
+    // своя оценка числа абзацев занижена (запуск командой — точного числа из лога bbm нет)
+    pct = 99;
+    line = `Перевод: ${p.done} абзацев — больше оценки ~${p.total}, скоро конец` + (p.per_min ? ` · ${p.per_min} в минуту` : '');
   } else if (p.total && p.done != null) {
-    pct = 100 * p.done / p.total;
-    line = `Перевод: ${p.done} из ~${p.total} абзацев` + (p.per_min ? ` · ${p.per_min} в минуту` : '') + (p.eta_min != null ? ` · осталось ~${fmtDur(p.eta_min * 60)}` : '');
+    pct = Math.min(100, 100 * p.done / p.total);
+    line = `Перевод: ${p.done} из ${p.exact ? '' : '~'}${p.total} абзацев` + (p.per_min ? ` · ${p.per_min} в минуту` : '') + (p.eta_min != null ? ` · осталось ~${fmtDur(p.eta_min * 60)}` : '');
   } else if (ci >= 0) pct = 100 * ci / list.length;
   $('#curdur').textContent = 'идёт ' + fmtDur(Date.now() / 1000 - j.started);
   $('#curbar').style.width = pct.toFixed(1) + '%';
@@ -851,7 +862,8 @@ document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => show
 (async () => {
   try { showTab(localStorage.getItem('tab') || 'work'); } catch (_) {}
   try { OPTS = await api('/api/options'); renderOptions(); } catch (e) { $('#err').textContent = e.message; }
-  await refreshBooks(); refresh(); refreshStatus();
+  // окно «Сейчас» и шкалы — сразу, не дожидаясь списка книг (после перезапуска интерфейса он может собираться секунды)
+  refresh(); refreshStatus(); await refreshBooks();
   setInterval(refresh, 3000); setInterval(refreshStatus, 3000); setInterval(refreshBooks, 30000);
 })();
 </script>

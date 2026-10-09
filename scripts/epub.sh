@@ -32,8 +32,8 @@ if [ -f "$W/.work.temp.bin" ] && [ -f "$WORKBOOK" ]; then
     log "2/6 Найден прерванный перевод — продолжаю с места остановки"
 else
     log "2/6 Подготовка книги"
-    rm -f "$W/.rosetta_log.jsonl" "$W/.senses.json"   # журнал адаптера и карта смыслов — только для этого перевода
-    python "$SCRIPTS/prep_epub.py" "$ORIG" "$WORKBOOK"
+    rm -f "$W/.rosetta_log.jsonl" "$W/.senses.json" "$W/.keep.json"   # журнал адаптера, карты смыслов и кода — только для этого перевода
+    python "$SCRIPTS/prep_epub.py" "$ORIG" "$WORKBOOK" --keep-map "$W/.keep.json"
 fi
 
 SKIP=$(python "$SCRIPTS/prep_epub.py" --index-files "$WORKBOOK")
@@ -51,6 +51,7 @@ case "$MODEL" in
         fi
         set --
         [ -f "$W/.senses.json" ] && set -- --senses "$W/.senses.json" --senses-rules "$CONFIG/senses.csv"
+        [ -s "$W/.keep.json" ] && set -- "$@" --keep "$W/.keep.json"      # код в заголовках (switch, this()…) — не переводить
         python "$SCRIPTS/rosetta_proxy.py" --listen 127.0.0.1:8083 --target "$OLLAMA_URL" --log "$W/.rosetta_log.jsonl" "$@" &
         PROXY_PID=$!
         trap 'kill $PROXY_PID 2>/dev/null || true' EXIT
@@ -87,7 +88,7 @@ python "$SCRIPTS/normalize_terms.py" "$W/.step.epub" "$OUT" || fail "normalize_t
 python "$SCRIPTS/fix_nav.py" "$OUT" || fail "fix_nav.py"
 
 log "6/6 Проверка"
-python "$SCRIPTS/qa_epub.py" "$ORIG" "$OUT" > "$QA" || fail "qa_epub.py"
+python "$SCRIPTS/qa_epub.py" "$ORIG" "$OUT" ${ONLY:+--only "$ONLY"} > "$QA" || fail "qa_epub.py"
 if [ -f "$W/.rosetta_log.jsonl" ]; then
     python -c "
 import json, sys

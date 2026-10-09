@@ -64,7 +64,115 @@ def load():
 
 
 def find(jid):
+    if jid.startswith('cli-'):
+        return next((j for j in external_runs() if j['id'] == jid), None)
     return next((j for j in jobs if j['id'] == jid), None)
+
+
+# ---------------- перевод, запущенный командой ----------------
+# `docker compose run … translate/pdf-epub/translate-pdf` идёт в своём контейнере: интерфейс не видит ни процесса, ни лога
+# (09.10: шёл перевод OCP, а в «Сейчас» — «Ничего не переводится», у книги — «перевод прерван»). Признак такого перевода:
+# в папке есть .lock (translate.sh пишет его при старте — это время начала) и её файлы менялись последние 5 минут
+# (журнал адаптера — каждые несколько секунд). flock на .lock НЕ проверяем: на диске Windows через Docker проба flock
+# повисала, а с ней /api/books и вся страница (09.10).
+EXT_ACTIVE = 300            # секунд без изменений в папке — перевод больше не считается идущим
+_ext = {'t': 0, 'list': [], 'objs': {}}
+
+
+def last_activity(w):
+    t = 0
+    for d in (w, os.path.join(w, '.docling')):
+        try:
+            for e in os.scandir(d):
+                if e.is_file(follow_symlinks=False):
+                    t = max(t, e.stat().st_mtime)
+        except OSError:
+            pass
+    return t
+
+
+def book_of(d):
+    """Папка в books → (файл книги в source, имя, расширение, страницы, режим) или None."""
+    m = re.fullmatch(r'(.+)_epub(?:_p(\d+-\d+))?', d)
+    if m and os.path.isfile(os.path.join(SOURCE, m.group(1) + '.pdf')):
+        return m.group(1) + '.pdf', m.group(1), 'pdf', m.group(2) or '', 'pdf-epub'
+    for ext in ('epub', 'pdf'):
+        if os.path.isfile(os.path.join(SOURCE, d + '.' + ext)):
+            return d + '.' + ext, d, ext, '', 'epub' if ext == 'epub' else 'pdf'
+    return None
+
+
+def finished_after_lock(w, name):
+    """Перевод уже закончился: служебный файл bbm удалён, а отчёт новее начала прогона (.lock)."""
+    try:
+        start = os.path.getmtime(os.path.join(w, '.lock'))
+        qa = os.path.getmtime(os.path.join(w, name + '_qa.txt'))
+    except OSError:
+        return False
+    return qa >= start and not os.path.isfile(os.path.join(w, '.work.temp.bin'))
+
+
+def external_runs():
+    """Переводы, запущенные командой (не интерфейсом), — в виде задач со status 'running' и external=True."""
+    if now() - _ext['t'] < 5:
+        return _ext['list']
+    with lock:
+        mine = {x['workdir'] for x in jobs if x['status'] == 'running'}
+    res = []
+    try:
+        dirs = os.listdir(BOOKS)
+    except OSError:
+        dirs = []
+    for d in dirs:
+        w = os.path.join(BOOKS, d)
+        if d.startswith('.') or w in mine or not os.path.isfile(os.path.join(w, '.lock')):
+            continue
+        last = last_activity(w)
+        if now() - last > 1800:
+            continue
+        b = book_of(d)
+        if not b:
+            continue
+        file, name, ext, pages, mode = b
+        if now() - last > EXT_ACTIVE or finished_after_lock(w, name):
+            continue
+        try:
+            started = os.path.getmtime(os.path.join(w, '.lock'))
+        except OSError:
+            started = last
+        j = _ext['objs'].get(w)
+        if j is None or j['started'] != started:        # новый прогон — новая «задача» (прогресс считается заново)
+            j = {'id': 'cli-' + d, 'external': True, 'book': file, 'name': name, 'ext': ext, 'mode': mode,
+                 'domains': [], 'pages': pages, 'only': [], 'en_only': False, 'status': 'running',
+                 'created': started, 'started': started, 'finished': None, 'rc': None, 'workdir': w, 'log': None,
+                 'note': 'Запущен командой в PowerShell: лог — в том окне, остановить — Ctrl+C там же.'}
+            _ext['objs'][w] = j
+        j['model'] = 'rosetta-ru' if os.path.isfile(os.path.join(w, '.rosetta_log.jsonl')) else ''
+        res.append(j)
+    _ext.update(t=now(), list=res)
+    return res
+
+
+def external_stage(j):
+    """Этап перевода, запущенного командой, — по файлам в папке (лога у интерфейса нет)."""
+    w = j['workdir']
+    try:
+        names = set(os.listdir(w))
+    except OSError:
+        return None
+    if j['mode'] == 'pdf':
+        return None                                     # PDF → PDF (pdf2zh): этапы другие, шкалы нет
+    if j['mode'] == 'pdf-epub' and j['name'] + '.epub' not in names:
+        return 'Сборка английского EPUB' if '.docling.json' in names else 'Разметка Docling'
+    if '.step.epub' in names:
+        return 'Термины и оглавление'
+    if 'work_bilingual.epub' in names:
+        return 'Восстановление разметки'
+    if '.work.temp.bin' in names or '.rosetta_log.jsonl' in names:
+        return 'Перевод'
+    if 'work.epub' in names:
+        return 'Подготовка книги'
+    return 'Глоссарий'
 
 
 # ---------------- книги ----------------
@@ -90,8 +198,23 @@ def workdir(name, ext, pages=''):
     return os.path.join(BOOKS, name)
 
 
+_chapters_cache = {}
+
+
 def epub_chapters(path):
-    """[(файл, название)] по порядку чтения; указатель и оглавление не предлагаем."""
+    """[(файл, название)] по порядку чтения; указатель и оглавление не предлагаем. Кэш по размеру и времени файла:
+    без него /api/books раз в 30 с читал каждую книгу целиком (на диске Windows через Docker это секунды)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    key = (path, st.st_mtime, st.st_size)
+    if key not in _chapters_cache:
+        _chapters_cache[key] = _epub_chapters(path)
+    return _chapters_cache[key]
+
+
+def _epub_chapters(path):
     try:
         z = zipfile.ZipFile(path)
         cont = z.read('META-INF/container.xml').decode('utf-8', 'replace')
@@ -207,6 +330,8 @@ def coverage(name, ext):
 
 
 def book_state(name, ext, runs=()):
+    if any(x['book'] == name + '.' + ext for x in external_runs()):
+        return 'в процессе'
     with lock:
         act = {x['status'] for x in jobs if x['book'] == name + '.' + ext and x['status'] in ('queued', 'running')}
     if 'running' in act:
@@ -545,38 +670,82 @@ def tail(path, nbytes=40000):
         return ''
 
 
+def scan_log(j):
+    """Этап и ход разметки Docling — по ВСЕМУ логу, а не по хвосту. bbm печатает в лог каждый абзац (EN и RU),
+    и за 5–10 минут перевода строка «3/6 Перевод» уходит из последних 200 КБ: этап пропадал, окно «Сейчас»
+    показывало «запуск…» без шкалы (08.10). Читаем только новое с прошлого раза; позиция и найденное — в j['_scan']."""
+    st = dict(j.get('_scan') or {})
+    try:
+        size = os.path.getsize(j['log'])
+    except OSError:
+        return st
+    pos = st.get('pos', 0)
+    if size < pos:                       # лог пересоздан — читаем заново
+        st, pos = {}, 0
+    if size > pos:
+        with open(j['log'], 'rb') as f:
+            f.seek(pos)
+            data = f.read(size - pos)
+        cut = data.rfind(b'\n') + 1      # неполную последнюю строку дочитаем в следующий раз
+        for line in data[:cut].decode('utf-8', 'replace').splitlines():
+            # строка прогресса bbm (tqdm): «… | 9499/9510 [3:52:24<01:06, …» — точное число абзацев (09.10:
+            # своя оценка count_units давала 9331 из 9510, и шкала упиралась в 100% за час до конца)
+            for m in re.finditer(r'\|\s*(\d+)/(\d+) \[', line):
+                st['bbm_total'] = int(m.group(2))
+            if line.startswith('['):
+                for pat, name in STAGES:
+                    if re.search(pat, line):
+                        st['stage'] = name
+            if 'docling:' in line:
+                m = re.search(r'docling: стр\. .*\((\d+)/(\d+), осталось ~(\d+) мин', line)
+                if m:
+                    st['docling'] = [int(m.group(1)), int(m.group(2)), int(m.group(3))]
+                m = re.search(r'docling: страницы .*кусков (\d+) \(готово раньше: (\d+)\)', line)
+                if m and 'docling' not in st:
+                    st['docling'] = [int(m.group(2)), int(m.group(1)), None]
+        st['pos'] = pos + cut
+        j['_scan'] = st                  # целиком новым словарём: save() может в это время писать jobs.json
+    return st
+
+
 def progress(j):
-    p = {'stage': None}
-    log = tail(j['log'], 200000)
-    for line in log.splitlines():
-        for pat, name in STAGES:
-            if re.search(pat, line):
-                p['stage'] = name
-        m = re.search(r'docling: стр\. .*\((\d+)/(\d+), осталось ~(\d+) мин', line)
-        if m:
-            p['docling'] = [int(m.group(1)), int(m.group(2)), int(m.group(3))]
-        m = re.search(r'docling: страницы .*кусков (\d+) \(готово раньше: (\d+)\)', line)
-        if m and 'docling' not in p:
-            p['docling'] = [int(m.group(2)), int(m.group(1)), None]
+    st = {'stage': external_stage(j)} if j.get('external') else scan_log(j)
+    p = {'stage': st.get('stage')}
+    if 'docling' in st:
+        p['docling'] = st['docling']
     w = j['workdir']
     work = os.path.join(w, 'work.epub')
-    if j.get('units') is None and os.path.isfile(work) and p['stage'] in ('Подготовка книги', 'Перевод'):
-        try:
-            j['units'] = count_units(work, set(j['only']) if j.get('only') else None)
-        except Exception:
-            j['units'] = 0
+    # Абзацы считаем только на этапе «Перевод»: на «Подготовке» prep_epub ещё пишет work.epub, недописанный zip
+    # давал ошибку → units = 0 навсегда, и строки «N из ~M абзацев» не было весь перевод (08.10, OCP).
+    # Ошибку или 0 пробуем снова не чаще раза в минуту.
+    # Считаем в фоне: на большой книге это секунды (9331 абзац OCP), и /api/jobs не должен их ждать (09.10).
+    if not j.get('units') and os.path.isfile(work) and p['stage'] == 'Перевод' \
+            and now() - j.get('_units_try', 0) > 60:
+        j['_units_try'] = now()
+
+        def calc(j=j, only=set(j['only']) if j.get('only') else None):
+            try:
+                j['units'] = count_units(work, only)
+            except Exception:
+                j['units'] = None
+        threading.Thread(target=calc, daemon=True).start()
+    if st.get('bbm_total') and p['stage'] == 'Перевод':
+        j['units'] = st['bbm_total']
+        p['exact'] = True
     if j.get('units'):
         done = count_lines(os.path.join(w, '.rosetta_log.jsonl')) if j['model'].startswith('rosetta') else None
         p['total'] = j['units']
         if done is not None:
-            p['done'] = min(done, j['units'])
+            p['done'] = done
+            if done >= j['units'] and not p.get('exact'):
+                p['over'] = True             # оценка занижена (bbm режет абзацы мельче): не показываем «100%, ~0 мин»
             hist = j.setdefault('_rate', [])
             if not hist or hist[-1][1] != done:
                 hist.append((now(), done))
                 del hist[:-60]
             if len(hist) >= 2 and hist[-1][1] > hist[0][1]:
                 rate = (hist[-1][1] - hist[0][1]) / (hist[-1][0] - hist[0][0])
-                p['eta_min'] = round((j['units'] - done) / rate / 60) if rate > 0 else None
+                p['eta_min'] = round(max(0, j['units'] - done) / rate / 60) if rate > 0 and not p.get('over') else None
                 p['per_min'] = round(rate * 60, 1)
     return p
 
@@ -587,7 +756,7 @@ def public(j, with_progress=False):
         d['progress'] = progress(j)
     d['outputs'] = outputs(j['workdir']) if j['status'] in ('done', 'failed', 'stopped', 'interrupted') else []
     # нужен ли этой задаче Docling (PDF, английский EPUB ещё не собран) — по этому признаку значок в трее его включает
-    d['needs_docling'] = (j['ext'] == 'pdf' and j['status'] in ('queued', 'running')
+    d['needs_docling'] = (j['mode'] == 'pdf-epub' and j['status'] in ('queued', 'running')
                           and not os.path.isfile(os.path.join(j['workdir'], j['name'] + '.epub')))
     return d
 
@@ -615,6 +784,8 @@ def new_job(p):
     if not re.fullmatch(r'[\w.:\-/]+', model):
         raise ValueError('Странное имя модели')
     with lock:
+        if any(x['book'] == book for x in external_runs()):
+            raise ValueError('Эта книга сейчас переводится командой в PowerShell — дождись окончания')
         busy = [x for x in jobs if x['status'] in ('queued', 'running') and x['book'] == book]
         if busy:
             raise ValueError('Эта книга уже в очереди или переводится')
@@ -688,6 +859,18 @@ def worker():
             wake.wait(5)
             wake.clear()
             continue
+        if external_runs():                  # видеокарта занята переводом, запущенным командой: два сразу не влезут в 4 ГБ
+            with lock:
+                working[0] = False
+                if j['status'] == 'queued' and not j.get('note'):
+                    j['note'] = 'Жду: идёт перевод, запущенный командой в PowerShell'
+                    save()
+            wake.wait(10)
+            wake.clear()
+            continue
+        with lock:
+            if j.get('note', '').startswith('Жду: идёт перевод'):
+                j['note'] = ''
         try:
             run(j)
         except Exception as e:           # не даём потоку умереть
@@ -721,6 +904,8 @@ def autoreload():
 
 
 def stop(jid):
+    if jid.startswith('cli-'):
+        raise ValueError('Перевод запущен командой — остановить его можно Ctrl+C в окне PowerShell')
     with lock:
         j = find(jid)
         if not j:
@@ -749,6 +934,8 @@ def stop(jid):
 
 
 def retry(jid):
+    if jid.startswith('cli-'):
+        raise ValueError('Перевод запущен командой — повтори ту же команду в PowerShell')
     j = find(jid)
     if not j:
         raise ValueError('Нет такой задачи')
@@ -943,11 +1130,15 @@ class H(BaseHTTPRequestHandler):
             if u.path == '/api/status':
                 return self.send(200, system_status())
             if u.path == '/api/jobs':
+                ext = [public(j, True) for j in external_runs()]
                 with lock:
-                    return self.send(200, [public(j, j['status'] == 'running') for j in reversed(jobs)])
+                    return self.send(200, ext + [public(j, j['status'] == 'running') for j in reversed(jobs)])
             m = re.fullmatch(r'/api/jobs/([\w\-]+)/log', u.path)
             if m:
                 j = find(m.group(1))
+                if j and j.get('external'):
+                    return self.send(200, 'Перевод запущен командой: лог идёт в окне PowerShell, где её запустили.',
+                                     'text/plain; charset=utf-8')
                 return self.send(200, tail(j['log'], int(q.get('bytes', ['30000'])[0])) if j else '', 'text/plain; charset=utf-8')
             m = re.fullmatch(r'/api/jobs/([\w\-]+)/untranslated', u.path)
             if m:
@@ -1027,6 +1218,13 @@ def main():
     threading.Thread(target=sampler, daemon=True).start()
     threading.Thread(target=probe_ollama, daemon=True).start()
     threading.Thread(target=probe_docling, daemon=True).start()
+
+    def warm():                      # после перезапуска кэши пусты: первый /api/books на большой библиотеке — секунды
+        try:
+            books()
+        except Exception:
+            pass
+    threading.Thread(target=warm, daemon=True).start()
     srv = ThreadingHTTPServer(('0.0.0.0', PORT), H)
     srv.daemon_threads = True
     print('Интерфейс: http://127.0.0.1:%d  (книги: %s, результаты: %s)' % (PORT, SOURCE, BOOKS), flush=True)

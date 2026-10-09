@@ -11,13 +11,20 @@
    bbm вырезает любую разметку, и без этого модель переделывала «A.2» в «2.2», «A.4» — в «Глава 4.».
 3. Ячейки/абзацы из одних чисел (<td><p>0</p></td>) → <var data-num="1">,
    иначе модель пишет «ноль», «двое».
+4. Код курсивом (Wiley, OCP 09.10): ключевые слова и идентификаторы набраны <i>switch</i>, а не <code>.
+   bbm стирает <i>, и модель переводила их: break → «Перерыв», switch → «переключатель».
+   В прозе такой <i> → <var data-i="1"> (возвращается курсивом). В заголовках разметку bbm вырезает целиком,
+   поэтому слова записываются в атрибут data-ikw и в карту --keep-map {ключ заголовка: [слова]}:
+   адаптер Rosetta передаёт их модели глоссарием «switch -> switch», restore_epub снова делает их курсивом.
+5. Буквы вариантов ответа (книги-экзамены): «A, C, D.» в начале абзаца/пункта и «option B», «options D and E»
+   в тексте → <var data-opt="1">: модель меняла B на «Б», C на «В», выбрасывала букву ответа.
 Обратное преобразование — restore_epub.py. Nav и предметный указатель не трогаем.
 
 Использование:
-  python prep_epub.py in.epub out.epub
+  python prep_epub.py in.epub out.epub [--keep-map keep.json]
   python prep_epub.py --index-files book.epub   # файлы указателя через запятую (для --exclude_filelist)
 """
-import posixpath, re, sys, zipfile
+import html as htmlmod, json, posixpath, re, sys, zipfile
 
 EM = re.compile(r'<em(\s[^>]*)?>([^<]*)</em>')
 LABEL = re.compile(r'<span(\s[^>]*\bclass="label"[^>]*)>([^<]*)</span>')
@@ -26,10 +33,53 @@ NUM_BLOCK = re.compile(r'<(p|td|th)(\s[^>]*)?>(\s*)([^<]*?)(\s*)</\1>')
 NUMERIC = re.compile(r'^[\d\s.,:;%±≥≤<>=+\-–—−×/()]+$')
 HTML = ('.html', '.xhtml', '.htm')
 
+HEADING = re.compile(r'<(h[1-6])((?:\s[^>]*)?)>(.*?)</\1>', re.S)
+ITAL = re.compile(r'<i(\s[^>]*)?>([^<]{1,60})</i>')
+HEAD_CODE = re.compile(r'<(i|em|code)\b[^>]*>([^<]{1,60})</\1>')
+
+# Ключевые слова Java, которые в курсиве почти всегда код (в прозе и заголовках)
+KW_PROSE = set('''abstract assert boolean break case catch char continue default else enum extends final finally float
+implements import instanceof int native null private protected public return short static strictfp switch synchronized
+throw throws transient try var void volatile while yield sealed non-sealed permits requires exports opens provides
+true false for-each do/while try-with-resources multi-catch javac java jar jdeps jmod jlink jpackage javadoc'''.split())
+# В заголовке курсивом выделяют только код, поэтому там годятся и слова, совпадающие с английскими
+KW_HEAD = KW_PROSE | set('class interface record module package new this super for if do byte long double '
+                         'module open uses to with transitive when'.split())
+
 
 def is_variable(text):
     t = text.strip()
     return bool(t) and (len(t) <= 3 or not re.search(r'[A-Za-z]{4}', t))
+
+
+def code_shape(x):
+    """Вид кода сам по себе: вызов(), имя.с.точкой, snake_case, @Аннотация, --флаг, camelCase, StringBuilder.
+    «e.g.», «i.e.», «and/or» — не код."""
+    return bool(re.search(r'\w\([^()]*\)$', x)                                 # main(), equals(Object)
+                or re.search(r'\w\.\w{2,}', x) or re.fullmatch(r'\.\w{2,}', x)  # Files.lines, MANIFEST.MF, .class
+                or re.search(r'[a-z]_[a-z]', x, re.I) or re.fullmatch(r'@\w+', x) or re.fullmatch(r'--?\w[\w-]*', x)
+                or re.search(r'[a-z][A-Z]', x)                                  # moduleName, camelCase
+                or re.fullmatch(r'[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+', x))       # StringBuilder, IOException
+
+
+def is_code_word(x, heading=False, italic_code=True):
+    """Курсив, похожий на код. italic_code — в книге курсивом набран код (Wiley: <i>moduleName</i>, <i>switch</i>):
+    тогда кодом считаются и ключевые слова, и одиночные буквы-переменные; иначе — только вид кода (code_shape),
+    чтобы «the <i>default</i> value» в обычной книге переводилось."""
+    x = x.strip()
+    if not x or not re.fullmatch(r'[\w.\-/()\[\]<>@$:]+', x):
+        return False
+    if code_shape(x):
+        return True
+    return italic_code and (x in (KW_HEAD if heading else KW_PROSE) or bool(re.fullmatch(r'[A-Za-z]\d?|[A-Z]{2}', x)))
+
+
+ITALIC_CODE_MIN = 5          # столько <i> вида кода (camelCase, main(), Files.lines) — и книга набирает код курсивом
+
+
+def italic_code_book(texts):
+    n = sum(code_shape(x.strip()) for t in texts for x in re.findall(r'<i(?:\s[^>]*)?>([^<]{1,60})</i>', t))
+    return n >= ITALIC_CODE_MIN
 
 
 INDEX = re.compile(r'<(?:section|body|div)\b[^>]*(?:data-type="index"|epub:type="[^"]*\bindex\b)')
@@ -43,7 +93,36 @@ def skip(text):
     return '<nav' in text or is_index(text)
 
 
-def convert(text, stats):
+def head_key(text):
+    """Ключ заголовка, как его видит адаптер: только буквы и цифры в нижнем регистре."""
+    return re.sub(r'[\W_]+', '', htmlmod.unescape(re.sub(r'<[^>]+>', '', text))).lower()
+
+
+# --- буквы вариантов ответа ---------------------------------------------------------------
+# между тегом и буквами бывает пустой span-метка страницы (Wiley: <li><span epub:type="pagebreak"/> A, D. …) — 7 ответов OCP
+ANSWER = re.compile(r'(<(?:p|li)\b[^>]*>\s*(?:<span\b[^>]*/>\s*|<span\b[^>]*>\s*</span>\s*)*)([A-J](?:, [A-J])*\.)(?=\s)')
+# «I» — только если дальше «is/are/and/or» или знак: «the option I chose» — местоимение
+LETTER = r'(?:[A-HJ]|I(?=\s+(?:is|are|was|and|or)\b|\s*[,.;:)]))(?![\w-]|[\'’](?!s\b))'
+OPTREF = re.compile(r'\b((?:[Oo]ption|[Cc]hoice)s?\s+)(' + LETTER +
+                    r'(?:(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)' + LETTER + r')*)')
+TOKEN = re.compile(r'(<[^>]+>)')
+SKIPTAG = re.compile(r'<(/?)(pre|code|var|math|script|style|kbd|samp)\b[^>]*?(/?)>', re.I)
+
+
+def map_text(html, fn):
+    """fn применяется к текстовым узлам вне pre/code/var/math."""
+    parts, depth = TOKEN.split(html), 0
+    for i, p in enumerate(parts):
+        if p.startswith('<'):
+            m = SKIPTAG.match(p)
+            if m and not m.group(3):
+                depth = max(0, depth + (-1 if m.group(1) else 1))
+        elif not depth and p.strip():
+            parts[i] = fn(p)
+    return ''.join(parts)
+
+
+def convert(text, stats, keep, italic_code=True):
     def em(m):
         if not is_variable(m.group(2)):
             return m.group(0)
@@ -65,8 +144,55 @@ def convert(text, stats):
         stats['номера заголовков'] += 1
         return '<%s%s data-label="%s">%s' % (m.group(1), m.group(2), m.group(4).replace('"', '&quot;'), m.group(3))
 
+    def answer(m):
+        stats['буквы ответов'] += 1
+        return '%s<var data-opt="1">%s</var>' % (m.group(1), m.group(2))
+
+    def optref(t):
+        def one(m):
+            stats['ссылки на варианты'] += 1
+            return m.group(1) + re.sub(r'\b[A-J]\b', lambda l: '<var data-opt="1">%s</var>' % l.group(0), m.group(2))
+        return OPTREF.sub(one, t)
+
+    def ital(m):
+        if not is_code_word(m.group(2), italic_code=italic_code):
+            return m.group(0)
+        stats['код курсивом'] += 1
+        return '<var data-i="1"%s>%s</var>' % (m.group(1) or '', m.group(2))
+
+    def heading(m):
+        words = []
+        for t in HEAD_CODE.finditer(m.group(3)):
+            w = htmlmod.unescape(t.group(2)).strip()
+            if '<' in w or '>' in w:               # List<T>: в системном промпте Rosetta угловые скобки опасны
+                continue
+            if (t.group(1) == 'code' or is_code_word(w, heading=True, italic_code=italic_code)) \
+                    and w not in [x[2:] for x in words]:
+                words.append(('c:' if t.group(1) == 'code' else 'i:') + w)
+        if not words:
+            return m.group(0)
+        stats['код в заголовках'] += len(words)
+        # второй ключ — без <code>: если bbm отдаст код заголовка меткой ⟦code1⟧, адаптер уберёт её из ключа
+        for k in {head_key(m.group(3)), head_key(re.sub(r'<code\b.*?</code>', '', m.group(3), flags=re.S))}:
+            keep[k] = sorted(set(keep.get(k, [])) | {w[2:] for w in words})
+        attr = htmlmod.escape('|'.join(words), quote=True)
+        return '<%s%s data-ikw="%s">%s</%s>' % (m.group(1), m.group(2), attr, m.group(3), m.group(1))
+
     text = EM.sub(em, text)
     text = HEAD_LABEL.sub(head, text)
+    text = HEADING.sub(heading, text)
+    # курсив-код и ссылки на варианты — только вне заголовков (там разметку bbm всё равно вырезает)
+    pieces = HEADING.split(text)        # [вне, тег, атрибуты, содержимое, вне, …]
+    for i in range(0, len(pieces), 4):
+        pieces[i] = ITAL.sub(ital, pieces[i])
+        pieces[i] = ANSWER.sub(answer, pieces[i])
+        pieces[i] = map_text(pieces[i], optref)
+    out = []
+    for i in range(0, len(pieces), 4):
+        out.append(pieces[i])
+        if i + 3 < len(pieces):
+            out.append('<%s%s>%s</%s>' % (pieces[i + 1], pieces[i + 2] or '', pieces[i + 3], pieces[i + 1]))
+    text = ''.join(out)
     text = LABEL.sub(label, text)
     return NUM_BLOCK.sub(num, text)
 
@@ -87,28 +213,43 @@ def index_files(path):
     return names
 
 
-def main(src, dst):
+def main(src, dst, keep_path=None):
     zin, zout = zipfile.ZipFile(src), zipfile.ZipFile(dst, 'w')
-    stats = {'em→var': 0, 'числа': 0, 'подписи': 0, 'номера заголовков': 0}
+    stats = {'em→var': 0, 'числа': 0, 'подписи': 0, 'номера заголовков': 0,
+             'код курсивом': 0, 'код в заголовках': 0, 'буквы ответов': 0, 'ссылки на варианты': 0}
+    keep = {}
+    italic_code = italic_code_book(zin.read(n).decode('utf-8', 'replace') for n in zin.namelist() if n.endswith(HTML))
     for info in zin.infolist():
         data = zin.read(info.filename)
         if info.filename.endswith(HTML):
             text = data.decode('utf-8')
-            if re.search(r'data-(em|num|span)="1"', text):
+            if re.search(r'data-(em|num|span|opt|i)="1"', text):
                 sys.exit('Книга уже подготовлена (есть data-em/data-num): %s' % info.filename)
             if not skip(text):
-                data = convert(text, stats).encode('utf-8')
+                data = convert(text, stats, keep, italic_code).encode('utf-8')
         comp = zipfile.ZIP_STORED if info.filename == 'mimetype' else zipfile.ZIP_DEFLATED
         zout.writestr(info, data, compress_type=comp)
     zout.close()
+    if keep_path:
+        with open(keep_path, 'w', encoding='utf-8') as f:
+            json.dump(keep, f, ensure_ascii=False, indent=0)
     print('    Переменные em→var: %d, подписи span.label: %d, номера заголовков: %d, числовые ячейки: %d'
           % (stats['em→var'], stats['подписи'], stats['номера заголовков'], stats['числа']))
+    print('    Код курсивом: %d%s, код в заголовках: %d, буквы ответов: %d, ссылки на варианты: %d'
+          % (stats['код курсивом'], '' if italic_code else ' (только вид кода — книга не набирает код курсивом)',
+             stats['код в заголовках'], stats['буквы ответов'], stats['ссылки на варианты']))
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 3 and sys.argv[1] == '--index-files':
-        print(','.join(index_files(sys.argv[2])))
-    elif len(sys.argv) == 3:
-        main(sys.argv[1], sys.argv[2])
+    argv = sys.argv[1:]
+    keep_path = None
+    if '--keep-map' in argv:
+        i = argv.index('--keep-map')
+        keep_path = argv[i + 1]
+        del argv[i:i + 2]
+    if len(argv) == 2 and argv[0] == '--index-files':
+        print(','.join(index_files(argv[1])))
+    elif len(argv) == 2:
+        main(argv[0], argv[1], keep_path)
     else:
         sys.exit(__doc__)

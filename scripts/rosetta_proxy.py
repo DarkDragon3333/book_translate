@@ -10,7 +10,9 @@ bbm шлёт: system="" и user = [<glossary>…</glossary> + правила п�
 - вынимает из запроса bbm текст абзаца и термины глоссария, собирает запрос в формате Rosetta;
 - из ответа берёт перевод (JSON {"text": …}; если JSON битый — текст как есть);
 - чинит метки: имя восстанавливается по номеру из исходника (⟦кода5⟧ → ⟦code5⟧, ⟦var7⟧ остаётся ⟦var7⟧);
-- если метки не сошлись или ответ пустой — один повтор с temperature 0;
+- если метки не сошлись, ответ пустой или не JSON — повтор с temperature 0 (метки перечисляются явно),
+  если метки всё ещё не сошлись — ещё один повтор (иначе bbm дописывает потерянный код в конец абзаца);
+- слова-код из заголовков (карта --keep) передаёт модели глоссарием «switch -> switch»;
 - отдаёт bbm {"ru_translation": …}, пишет журнал (исходник, термины, сырой ответ, итог, метки, повтор).
 
 Запуск внутри контейнера translate:
@@ -27,6 +29,7 @@ a.add_argument('--context', default='A technical book about software development
 a.add_argument('--tone', default='Clear, natural technical prose, as in a professionally edited book.')
 a.add_argument('--senses', help='карта смыслов книги (.senses.json от scripts/senses.py)')
 a.add_argument('--senses-rules', default='/config/senses.csv')
+a.add_argument('--keep', help='карта кода в заголовках {ключ заголовка: [слова]} от prep_epub.py --keep-map')
 args = a.parse_args()
 lock = threading.Lock()
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -34,8 +37,42 @@ opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 ASK = re.compile(r'Please help me to translate,`(.*)` to Russian, please return only translated content', re.S)
 GLOSS = re.compile(r'<glossary>\n(.*?)\n</glossary>', re.S)
 MARK = re.compile(r'⟦([a-z]+)(\d+)⟧')
-# метка, которую модель испортила: ⟦ кода 5 ⟧, ⟦code5' (вместо ⟧ — апостроф из &#x27;)
-ANY_MARK = re.compile(r'⟦\s*([^\W\d_]*)\s*(\d+)\s*(?:⟧|[\'’](?!⟧))')
+# метка, которую модель испортила. Видели: ⟦ кода 5 ⟧, ⟦code5' (апостроф из &#x27;), ⟦code48], ⟦code136;], ⟦code227;⟧,
+# ⟦var135» (модель закрыла метку кавычкой «…»), ⟦в степени 83⟧ (имя метки переведено).
+# Имя — до 3 слов, номер обязателен; закрывающая: ⟧ | ] | » (кавычка возвращается в текст) | апостроф.
+ANY_MARK = re.compile(r'⟦\s*((?:[^\W\d_]+\s+){0,2}[^\W\d_]*)\s*(\d+)\s*;?\s*(⟧|\]|»|[\'’](?!⟧))')
+
+
+# Текст вида <s>, </s>, <i> в абзаце (не код, а обозначения в прозе): на «</s>» Rosetta (Gemma 3) обрывает ответ.
+# Модели такие теги уходят как &lt;s&gt; и возвращаются обратно. Тест 08.10 (test_tags.py, 2 абзаца Géron × 2 прогона):
+# как есть — обрыв 4/4; ‹s› — теги потеряны 2/4; &lt;s&gt; — целиком и с тегами 4/4.
+TAG = re.compile(r'</?[A-Za-z_][\w:-]*>')
+
+
+def esc_tags(src):
+    if '&lt;' in src or '&gt;' in src:           # в тексте уже есть сущности — не трогаем, обратно не отличить
+        return src
+    return TAG.sub(lambda m: '&lt;' + m.group(0)[1:-1] + '&gt;', src)
+
+
+def unesc_tags(src, out):
+    names = {t[1:-1] for t in TAG.findall(src)}
+    if not names or '&lt;' in src or '&gt;' in src:
+        return out
+    return re.sub(r'&lt;(/?[A-Za-z_][\w:-]*)&gt;', lambda m: '<%s>' % m.group(1) if m.group(1) in names else m.group(0), out)
+
+
+KEEP = {}
+if args.keep:
+    try:
+        KEEP = json.load(open(args.keep, encoding='utf-8'))
+    except Exception as e:
+        print('rosetta_proxy: карта кода в заголовках не загружена: %s' % e, flush=True)
+
+
+def head_key(text):
+    """Тот же ключ, что в prep_epub.head_key: только буквы и цифры, нижний регистр, без меток."""
+    return re.sub(r'[\W_]+', '', MARK.sub('', text)).lower()
 
 
 def marks(t):
@@ -44,7 +81,14 @@ def marks(t):
 
 def fix_marks(src, out):
     names = {m.group(2): m.group(1) for m in MARK.finditer(src)}
-    return ANY_MARK.sub(lambda m: '⟦%s%s⟧' % (names.get(m.group(2), m.group(1) or 'code'), m.group(2)), out)
+    out = re.sub(r'(⟦[^⟧\s]{0,20}\d+)\\(?:x|u00|u)27;?', r"\1'", out)   # ⟦code783\u27; — апостроф, экранированный моделью
+
+    def sub(m):
+        name = names.get(m.group(2))
+        if name is None and not re.fullmatch(r'[a-z]*', m.group(1).strip()):
+            return m.group(0)                    # номера нет в исходнике и имя не латиница — не трогаем
+        return '⟦%s%s⟧' % (name or m.group(1).strip() or 'code', m.group(2)) + ('»' if m.group(3) == '»' else '')
+    return ANY_MARK.sub(sub, out)
 
 
 # Смысл многозначных терминов (feature, transformer, recall…): карта строится до перевода по всей книге
@@ -89,19 +133,37 @@ def apply_senses(src, terms):
 
 
 def case_ok(term, src):
-    """Термин без заглавных букв совпадает в любом регистре, с заглавными — только точно (целым словом)."""
+    """Термин без заглавных букв совпадает в любом регистре, с заглавными — только точно (целым словом)
+    или с заглавной первой буквой в начале предложения/заголовка («Inclusive OR» для «inclusive OR»)."""
     if term == term.lower():
         return True
-    return re.search(r'(?<!\w)' + re.escape(term) + r'(?!\w)', src) is not None
+    forms = {term, term[0].upper() + term[1:]}
+    return any(re.search(r'(?<!\w)' + re.escape(t) + r'(?!\w)', src) for t in forms)
 
 
-def system_prompt(terms, has_marks):
+def has_word(text, w):
+    return re.search(r'(?<![\w-])' + re.escape(w) + r'(?![\w(-])', text) is not None
+
+
+def unquote_keep(out, keep):
+    """`switch`, 'for' → switch, for: кавычки и обратные апострофы вокруг слов-кода из заголовка
+    (курсив вернёт restore_epub)."""
+    for w in keep:
+        out = re.sub(r'([`\'"])(%s)\1' % re.escape(w), r'\2', out)
+    return out
+
+
+def system_prompt(terms, has_marks, need=None, lost=None):
     s = ["Translate the user's text to Russian.", 'Context: ' + args.context, 'Tone: ' + args.tone]
     if terms:
         s.append('Glossary:')
         s += ['- %s -> %s' % t for t in terms]
     if has_marks:
         s.append('Keep placeholders like ⟦code1⟧ and ⟦var2⟧ exactly as they are, at the right place.')
+    if need:
+        s.append('The translation must contain each of these placeholders exactly once: %s.' % ', '.join(need))
+    if lost:
+        s.append('Keep these words in English exactly as written (they are code): %s.' % ', '.join(lost))
     s += ['Output format: JSON', 'Provide the final translation immediately without any other text.']
     return '\n'.join(s)
 
@@ -125,8 +187,19 @@ def parse(raw):
                 v = json.loads('"%s"' % v)
             except ValueError:
                 v = v.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-            return v.strip(), False
+            return tidy(v), False
+    # ответ оборван (Rosetta останавливается на «</s>» в тексте): снять начало {"text": ", иначе оно уходит в книгу
+    t = re.match(r'\{\s*"text"\s*:\s*"(.*)$', raw, re.S)
+    if t:
+        return tidy(t.group(1).replace('\\n', '\n').replace('\\"', '"')), False
     return raw, False
+
+
+def tidy(v):
+    """Хвосты битого JSON: «Построение циклов для"», «Коллекторы ти",», «:"Пропуск данных»."""
+    v = re.sub(r'^\s*:\s*"', '', v.strip())
+    v = re.sub(r'"\s*[,}]*\s*$', '', v)
+    return v.strip()
 
 
 def call(model, system, text, temperature):
@@ -190,26 +263,35 @@ class H(http.server.BaseHTTPRequestHandler):
         dropped = [t for t in terms if not case_ok(t[0], src)]
         terms = [t for t in terms if case_ok(t[0], src)]
         terms, senses_changed, senses_missing = apply_senses(src, terms)
-        system = system_prompt(terms, bool(MARK.search(src)))
+        keep = [w for w in KEEP.get(head_key(src), []) if w not in {t[0] for t in terms}]
+        terms = terms + [(w, w) for w in keep]
+        has_marks = bool(MARK.search(src))
+        send = esc_tags(src)
         tries = []
-        for temp in (q.get('temperature', 0.2), 0.0):
+        for n, temp in enumerate((q.get('temperature', 0.2), 0.0, 0.4)):
+            if n == 2 and tries[-1]['marks_ok']:
+                break                              # третья попытка — только ради меток
+            need = marks(src) if n and not tries[-1]['marks_ok'] else None
+            lost = [w for w in keep if not has_word(tries[-1]['out'], w)] if n else []
             try:
-                raw = call(model, system, src, temp)
+                raw = call(model, system_prompt(terms, has_marks, need, lost), send, temp)
             except Exception as e:
                 return self._send(502, json.dumps({'error': str(e)}).encode())
             out, js = parse(raw)
-            out = fix_marks(src, out)
+            out = unquote_keep(fix_marks(src, unesc_tags(src, out)), keep)
             ok = marks(src) == marks(out) and bool(out)
-            tries.append({'raw': raw, 'out': out, 'json': js, 'marks_ok': ok})
-            if ok:
+            kept = all(has_word(out, w) for w in keep)
+            tries.append({'raw': raw, 'out': out, 'json': js, 'marks_ok': ok, 'keep_ok': kept})
+            if ok and js and kept:
                 break
-        best = next((t for t in tries if t['marks_ok']), tries[-1])
+        rank = lambda t: (t['marks_ok'], t['json'], t['keep_ok'])
+        best = max(tries, key=rank)               # при равенстве — более ранняя попытка
         content = json.dumps({'ru_translation': best['out']}, ensure_ascii=False) if 'ru_translation' in fmt else best['out']
         self._send(200, json.dumps(reply(content, model), ensure_ascii=False).encode())
         with lock, open(args.log, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({'src': src, 'terms': terms, 'dropped': dropped, 'senses': senses_changed,
+            f.write(json.dumps({'src': src, 'terms': terms, 'dropped': dropped, 'keep': keep, 'senses': senses_changed,
                                 'senses_missing': senses_missing, 'out': best['out'], 'marks_ok': best['marks_ok'],
-                                'json': best['json'], 'retries': len(tries) - 1,
+                                'json': best['json'], 'keep_ok': best['keep_ok'], 'retries': len(tries) - 1,
                                 'raw': [t['raw'] for t in tries]}, ensure_ascii=False) + '\n')
 
     def log_message(self, *a):
