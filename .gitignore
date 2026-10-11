@@ -25,3 +25,6 @@ test_books/testbook_src/*.aux
 test_books/testbook_src/*.log
 test_books/testbook_src/*.toc
 !test_books/eval_prog/eval_prog.epub
+experiments/decision/hf.env
+config/ru_corpus_words.txt.gz
+experiments/decision/hard/hard_sel.json

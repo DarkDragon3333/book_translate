@@ -1,0 +1,11 @@
+{
+ "model": "MODEL",
+ "state": "EN: To solve the system, you can compute the inverse of the matrix and multiply it by the vector.\nRU: Чтобы решить систему, можно вычислить обратную матрицу и умножить её на вектор.",
+ "questions": {
+  "faithful": {
+   "type": "noul",
+   "instructions": "The state has an English source sentence (EN) and its Russian translation (RU). Does the Russian translation preserve the meaning of the English source?"
+  }
+ },
+ "keep_alive": "10m"
+}

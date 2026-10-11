@@ -1,0 +1,25 @@
+# Тест моделей принятия решений (Ollama 0.35+, /v1/systemone).
+# Отдельно от основной системы: свой проект, свой volume, порт 11435.
+# Запуск:  docker.exe compose -f experiments\decision\compose.yml up -d
+# Удаление: docker.exe compose -f experiments\decision\compose.yml down -v
+name: bt_decision
+services:
+  ollama-dm:
+    image: ollama/ollama:0.35.1   # после проверки закрепить по digest
+    container_name: ollama-dm
+    ports:
+      - "127.0.0.1:11435:11434"
+    environment:
+      LLAMA_ARG_CACHE_RAM: "0"
+      OLLAMA_KEEP_ALIVE: "10m"
+    volumes:
+      - dm-data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+volumes:
+  dm-data:

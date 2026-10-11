@@ -24,7 +24,7 @@ fail() { log "ОШИБКА: $*"; log "Служебные файлы оставл
 
 log "1/6 Глоссарий: $DOMAINS"
 python "$SCRIPTS/build_glossary.py" --format bbm --dir "$CONFIG/glossary" --domains "$DOMAINS" \
-    --extra "$SOURCE_DIR/$NAME.glossary.csv" --out "$GLOS"
+    --extra "$SOURCE_DIR/$NAME.glossary.csv" --book "$ORIG" --out "$GLOS"
 
 RESUME=""
 if [ -f "$W/.work.temp.bin" ] && [ -f "$WORKBOOK" ]; then
@@ -101,6 +101,9 @@ if alt or no or miss:
     print('Смысл по контексту: другой перевод %d, не подсказано %d, абзац не найден в карте %d' % (alt, no, miss))
 " "$W/.rosetta_log.jsonl" >> "$QA"
 fi
+python "$SCRIPTS/ru_check.py" "$OUT" --words "$SCRIPTS/tools/ru_words.txt.gz" --corpus "$CONFIG/ru_corpus_words.txt.gz" \
+    --glossary-dir "$CONFIG/glossary" ${ONLY:+--only "$ONLY"} --json "$W/.ru_check.json" >> "$QA" \
+    || log "    Проверка русских слов не выполнена"
 cat "$QA"
 
 rm -f "$WORKBOOK" "$W/work_bilingual.epub" "$W/work_bilingual_temp.epub" "$W/work_plan.json" \

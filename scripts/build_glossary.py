@@ -11,10 +11,13 @@
 Для bbm к каждому термину добавляется английское множественное число с тем же переводом
 (bbm ищет термин точной формой целым словом: «neural network» не срабатывает на «neural networks»;
 перевод в именительном падеже единственного числа модель склоняет сама).
+С --book (EPUB, HTML или TXT книги) добавляются сочетания терминов с общим последним словом, которые
+встречаются в тексте: «liveness and readiness probes» при терминах liveness probe и readiness probe.
+Иначе подходит только одна из записей, и модель ставит её перевод не к тому слову (Spring in Action, 10.10.2026).
 
-  python build_glossary.py --format bbm|pdf2zh --dir config/glossary --domains ml,math [--extra book.csv] [--out file]
+  python build_glossary.py --format bbm|pdf2zh --dir config/glossary --domains ml,math [--extra book.csv] [--book book.epub] [--out file]
 """
-import argparse, csv, io, os, sys
+import argparse, csv, html, io, os, re, sys, zipfile
 
 
 def read(path):
@@ -40,6 +43,8 @@ def plurals(term):
     head, sep, last = term.rpartition(' ')
     if not last.isalpha() or not last.islower() or last in UNCOUNTABLE or len(last) < 3:
         return []
+    if last.endswith('s') and not last.endswith(('ss', 'us', 'is', 'as')):   # уже мн. ч. (features, time series)
+        return []
     if last in IRREGULAR:
         forms = IRREGULAR[last]
     elif last.endswith(('s', 'x', 'z', 'ch', 'sh')):
@@ -51,12 +56,79 @@ def plurals(term):
     return [head + sep + f for f in forms]
 
 
+def book_text(path):
+    """Текст книги без разметки и блоков кода."""
+    if path.lower().endswith('.epub'):
+        z = zipfile.ZipFile(path)
+        parts = [z.read(n).decode('utf-8', 'ignore') for n in sorted(z.namelist()) if n.lower().endswith(('.xhtml', '.html', '.htm'))]
+    else:
+        with open(path, encoding='utf-8', errors='ignore') as f:
+            parts = [f.read()]
+    text = ' '.join(re.sub(r'<pre\b.*?</pre>', ' ', p, flags=re.S | re.I) for p in parts)
+    return html.unescape(re.sub(r'<[^>]+>', ' ', text))
+
+
+COORD = re.compile(r"\b((?:[A-Za-z][\w-]*, ){0,3}[A-Za-z][\w-]*,? (?:and|or) [A-Za-z][\w-]*) ([A-Za-z][\w-]*)\b")
+SINGULAR = {f: k for k, v in IRREGULAR.items() for f in v}
+
+
+def singulars(w):
+    out = [w, SINGULAR.get(w, '')]
+    if w.endswith('ies'):
+        out.append(w[:-3] + 'y')
+    if w.endswith('es'):
+        out.append(w[:-2])
+    if w.endswith('s'):
+        out.append(w[:-1])
+    return [x for x in out if x]
+
+
+def join_ru(items, conj):
+    return items[0] if len(items) == 1 else ', '.join(items[:-1]) + ' ' + conj + ' ' + items[-1]
+
+
+def combine_ru(targets, conj):
+    """проба живучести + проба готовности → проба живучести и готовности; модульный тест + интеграционный тест →
+    модульный и интеграционный тест; без общей части — переводы целиком через «и»."""
+    ws = [re.sub(r'\s*\([^)]*\)', '', t).split() for t in targets]
+    n = min(len(w) for w in ws)
+    suf = 0
+    while suf < n - 0 and len({tuple(w[len(w) - suf - 1:]) for w in ws}) == 1 and all(len(w) > suf + 1 for w in ws):
+        suf += 1
+    pre = 0
+    while pre < n and len({tuple(w[:pre + 1]) for w in ws}) == 1 and all(len(w) > pre + 1 for w in ws):
+        pre += 1
+    if suf and all(len(w) - suf == 1 for w in ws):      # различие — одно слово, иначе склейка выходит кривой
+        return join_ru([' '.join(w[:len(w) - suf]) for w in ws], conj) + ' ' + ' '.join(ws[0][len(ws[0]) - suf:])
+    if pre and all(len(w) - pre == 1 for w in ws):
+        return ' '.join(ws[0][:pre]) + ' ' + join_ru([' '.join(w[pre:]) for w in ws], conj)
+    return join_ru([' '.join(w) for w in ws], conj)
+
+
+def coordinations(text, terms, skip):
+    """Сочетания «A and B Xs» / «A, B or C X» из текста книги, где каждое «A X» есть в глоссарии."""
+    found = {}
+    for m in COORD.finditer(text):
+        phrase = m.group(0).lower()
+        if phrase in terms or phrase in found:
+            continue
+        mods = [x for x in re.split(r',? (?:and|or) |, ', m.group(1).lower()) if x]
+        conj = 'или' if re.search(r'\bor\b', m.group(1)) else 'и'
+        for head in singulars(m.group(2).lower()):
+            keys = [mod + ' ' + head for mod in mods]
+            if len(mods) > 1 and all(k in terms and k not in skip and terms[k][0] != terms[k][1] for k in keys):
+                found[phrase] = (phrase, combine_ru([terms[k][1] for k in keys], conj))
+                break
+    return found
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--format', choices=['bbm', 'pdf2zh'], required=True)
     ap.add_argument('--dir', default='/config/glossary')
     ap.add_argument('--domains', default='base')
     ap.add_argument('--extra')
+    ap.add_argument('--book')
     ap.add_argument('--out')
     a = ap.parse_args()
 
@@ -88,6 +160,17 @@ def main():
             for p in plurals(s):
                 terms.setdefault(p.lower(), (p, t))
 
+    n_coord = 0
+    if a.book and os.path.isfile(a.book):
+        try:
+            keep = {s.lower() for s, _ in read(os.path.join(a.dir, 'keep.csv'))} if os.path.isfile(os.path.join(a.dir, 'keep.csv')) else set()
+            for key, v in coordinations(book_text(a.book), terms, keep).items():
+                if key not in terms:
+                    terms[key] = v
+                    n_coord += 1
+        except Exception as e:                 # сочетания — улучшение, перевод без них не должен падать
+            print('    Сочетания терминов не собраны: %s' % e, file=sys.stderr)
+
     out = io.StringIO()
     if a.format == 'bbm':
         for s, t in terms.values():
@@ -105,7 +188,8 @@ def main():
     else:
         sys.stdout.write(text)
     extra = ' + ' + os.path.basename(a.extra) if a.extra and os.path.isfile(a.extra) else ''
-    forms = ' + %d форм мн. ч.' % (len(terms) - n_terms) if len(terms) > n_terms else ''
+    forms = ' + %d форм мн. ч.' % (len(terms) - n_terms - n_coord) if len(terms) - n_coord > n_terms else ''
+    forms += ' + %d сочетаний «A и B» из книги' % n_coord if n_coord else ''
     print('    Терминов: %d%s (%s%s)' % (n_terms, forms, ', '.join(domains), extra), file=sys.stderr)
     for c in conflicts:
         print('    Переопределён: ' + c, file=sys.stderr)
