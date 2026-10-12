@@ -118,6 +118,8 @@ def external_runs():
         return _ext['list']
     with lock:
         mine = {x['workdir'] for x in jobs if x['status'] == 'running'}
+        # прогоны интерфейса (в т. ч. уже остановленные): .lock появился между стартом и концом задачи
+        gui_runs = [(x['workdir'], x['started'], x['finished']) for x in jobs if x.get('started')]
     res = []
     try:
         dirs = os.listdir(BOOKS)
@@ -140,6 +142,8 @@ def external_runs():
             started = os.path.getmtime(os.path.join(w, '.lock'))
         except OSError:
             started = last
+        if any(gw == w and gs - 5 <= started <= (gf or now()) + 5 for gw, gs, gf in gui_runs):
+            continue                                    # остановленный/законченный прогон интерфейса, не команда
         j = _ext['objs'].get(w)
         if j is None or j['started'] != started:        # новый прогон — новая «задача» (прогресс считается заново)
             j = {'id': 'cli-' + d, 'external': True, 'book': file, 'name': name, 'ext': ext, 'mode': mode,
@@ -176,29 +180,70 @@ def external_stage(j):
 
 
 # ---------------- книги ----------------
+# Кэши книг (страницы PDF, главы EPUB, покрытие перевода) хранятся в books/.gui/cache.json: после перезапуска
+# server.py (обновление, перезапуск контейнера) первый /api/books не перечитывает все книги заново (12.10).
+# Запись — путь (или имя книги) → [время, размер, значение]; устаревшая запись просто не совпадает и перезаписывается.
+CACHE_FILE = os.path.join(STATE, 'cache.json')
+CACHE_VER = 1
 _pages_cache = {}
+_chapters_cache = {}
+_cov_cache = {}
+_cache_dirty = [False]
+
+
+def cache_load():
+    try:
+        d = json.load(open(CACHE_FILE, encoding='utf-8'))
+    except (OSError, ValueError):
+        return
+    if not isinstance(d, dict) or d.get('v') != CACHE_VER:
+        return
+    for name, c in (('pages', _pages_cache), ('chapters', _chapters_cache), ('cov', _cov_cache)):
+        v = d.get(name)
+        if isinstance(v, dict):
+            c.update(v)
+
+
+def cache_save():
+    if not _cache_dirty[0]:
+        return
+    _cache_dirty[0] = False
+    try:
+        d = {'v': CACHE_VER, 'pages': dict(_pages_cache), 'chapters': dict(_chapters_cache), 'cov': dict(_cov_cache)}
+        tmp = CACHE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, CACHE_FILE)
+    except Exception:
+        _cache_dirty[0] = True                         # не вышло — попробуем в следующий раз
+
+
+def cache_saver():
+    while True:
+        time.sleep(20)
+        cache_save()
 
 
 def pdf_pages(path):
     st = os.stat(path)
-    key = (path, st.st_mtime, st.st_size)
-    if key not in _pages_cache:
+    key = [st.st_mtime, st.st_size]
+    c = _pages_cache.get(path)
+    if not c or c[:2] != key:
         try:
             import pdfplumber
             with pdfplumber.open(path) as p:
-                _pages_cache[key] = len(p.pages)
+                n = len(p.pages)
         except Exception:
-            _pages_cache[key] = None
-    return _pages_cache[key]
+            n = None
+        c = _pages_cache[path] = key + [n]
+        _cache_dirty[0] = True
+    return c[2]
 
 
 def workdir(name, ext, pages=''):
     if ext == 'pdf':
         return os.path.join(BOOKS, '%s_epub%s' % (name, ('_p' + pages) if pages else ''))
     return os.path.join(BOOKS, name)
-
-
-_chapters_cache = {}
 
 
 def epub_chapters(path):
@@ -208,10 +253,12 @@ def epub_chapters(path):
         st = os.stat(path)
     except OSError:
         return []
-    key = (path, st.st_mtime, st.st_size)
-    if key not in _chapters_cache:
-        _chapters_cache[key] = _epub_chapters(path)
-    return _chapters_cache[key]
+    key = [st.st_mtime, st.st_size]
+    c = _chapters_cache.get(path)
+    if not c or c[:2] != key:
+        c = _chapters_cache[path] = key + [[list(x) for x in _epub_chapters(path)]]
+        _cache_dirty[0] = True
+    return c[2]
 
 
 def _epub_chapters(path):
@@ -303,16 +350,13 @@ def _chapter_texts(path):
     return res
 
 
-_cov_cache = {}
-
-
 def coverage(name, ext):
     """Сколько глав переведено: глава с текстом (50+ букв) считается переведённой, если в ней больше 30% кириллицы."""
     en, ru = en_epub(name, ext), ru_epub(name, ext)
     if not (os.path.isfile(en) and os.path.isfile(ru)):
         return None
-    key = (en, os.path.getmtime(en), ru, os.path.getmtime(ru))
-    if _cov_cache.get(name, (None,))[0] != key:
+    key = [en, os.path.getmtime(en), ru, os.path.getmtime(ru)]
+    if _cov_cache.get(name, [None])[0] != key:
         try:
             E, R = _chapter_texts(en), _chapter_texts(ru)
             files = {}
@@ -325,7 +369,8 @@ def coverage(name, ext):
             cov = {'files': files, 'done': sum(files.values()), 'total': len(files)}
         except Exception:
             cov = None
-        _cov_cache[name] = (key, cov)
+        _cov_cache[name] = [key, cov]
+        _cache_dirty[0] = True
     return _cov_cache[name][1]
 
 
@@ -905,6 +950,7 @@ def autoreload():
                 continue
             print('server.py обновлён — перезапускаю интерфейс', flush=True)
             save()
+            cache_save()
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
@@ -1218,18 +1264,21 @@ class H(BaseHTTPRequestHandler):
 
 def main():
     load()
+    cache_load()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=autoreload, daemon=True).start()
     threading.Thread(target=sampler, daemon=True).start()
     threading.Thread(target=probe_ollama, daemon=True).start()
     threading.Thread(target=probe_docling, daemon=True).start()
 
-    def warm():                      # после перезапуска кэши пусты: первый /api/books на большой библиотеке — секунды
+    def warm():                      # кэши с диска + досчёт новых книг: первый /api/books на большой библиотеке — секунды
         try:
             books()
         except Exception:
             pass
+        cache_save()
     threading.Thread(target=warm, daemon=True).start()
+    threading.Thread(target=cache_saver, daemon=True).start()
     srv = ThreadingHTTPServer(('0.0.0.0', PORT), H)
     srv.daemon_threads = True
     print('Интерфейс: http://127.0.0.1:%d  (книги: %s, результаты: %s)' % (PORT, SOURCE, BOOKS), flush=True)
@@ -1244,6 +1293,7 @@ def main():
                     os.killpg(pr.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+        cache_save()
         sys.exit(0)
     signal.signal(signal.SIGTERM, bye)
     srv.serve_forever()
