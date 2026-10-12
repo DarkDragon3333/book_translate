@@ -38,6 +38,9 @@ UNCOUNTABLE = {'data', 'software', 'hardware', 'feedback', 'information', 'knowl
                'code', 'middleware', 'malware', 'ransomware', 'overhead', 'metadata', 'bandwidth', 'throughput'}
 
 
+ABBR = re.compile(r'[A-Z][A-Z0-9]{1,5}')   # CNN, GPU, LLM, MLP, TLU, BERT
+
+
 def plurals(term):
     """Английские формы множественного числа последнего слова термина: cache miss → cache misses."""
     head, sep, last = term.rpartition(' ')
@@ -159,6 +162,11 @@ def main():
                 continue
             for p in plurals(s):
                 terms.setdefault(p.lower(), (p, t))
+        # аббревиатуры во мн. ч. (CNNs, RNNs, LLMs, GPUs): bbm ищет точную форму, и без этого модель получала «CNNs»
+        # без подсказки и придумывала «НСНК» (Géron, 12.10). Перевод тот же — модель склоняет сама.
+        for key, (s, t) in list(terms.items()):
+            if ABBR.fullmatch(s) and not s.endswith('S'):
+                terms.setdefault(key + 's', (s + 's', t))
 
     n_coord = 0
     if a.book and os.path.isfile(a.book):

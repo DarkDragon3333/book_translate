@@ -47,8 +47,18 @@ KW_HEAD = KW_PROSE | set('class interface record module package new this super f
                          'module open uses to with transitive when'.split())
 
 
-def is_variable(text):
+# Короткие английские слова, которые выделяют курсивом для ударения («are *not* spread», «a *lot* of»):
+# это не переменные, их надо переводить (Géron 12.10: «экземпляры not равномерно распределены»).
+# Обозначение с индексом (<em>fan</em><sub>in</sub>) остаётся переменной — см. convert().
+EMPHASIS = set('''an the not no nor and but or yet so all any few lot own too very is are was were be
+    been am do does did can may must has had have how why who what when where at to of by as if it its we
+    you our one two new old big bad end try use see way out off now yes get let tie non per via'''.split())
+
+
+def is_variable(text, indexed=False):
     t = text.strip()
+    if not indexed and t.lower() in EMPHASIS:
+        return False
     return bool(t) and (len(t) <= 3 or not re.search(r'[A-Za-z]{4}', t))
 
 
@@ -124,7 +134,8 @@ def map_text(html, fn):
 
 def convert(text, stats, keep, italic_code=True):
     def em(m):
-        if not is_variable(m.group(2)):
+        indexed = re.match(r'\s*<su[bp]\b', m.string[m.end():m.end() + 12]) is not None   # fan<sub>in</sub>
+        if not is_variable(m.group(2), indexed):
             return m.group(0)
         stats['em→var'] += 1
         return '<var data-em="1"%s>%s</var>' % (m.group(1) or '', m.group(2))
