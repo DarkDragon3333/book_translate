@@ -424,7 +424,8 @@ def _detect_key(path):
     g = sorted((f, os.path.getmtime(os.path.join(gdir, f))) for f in os.listdir(gdir) if f.endswith('.csv')) \
         if os.path.isdir(gdir) else []
     st = os.stat(path)
-    return json.dumps([path, st.st_mtime, st.st_size, g])
+    dd = os.path.join(SCRIPTS, 'detect_domains.py')       # новые правила подбора — пересчитать подсказки
+    return json.dumps([path, st.st_mtime, st.st_size, g, os.path.getmtime(dd) if os.path.isfile(dd) else 0])
 
 
 def _detect_run(book, path, key, cache):
@@ -883,16 +884,20 @@ def worker():
 
 
 def autoreload():
-    """После обновления server.py перезапускаемся сами, как только нет идущего перевода:
-    перезапуск контейнера вручную не нужен, а идущий перевод не прерывается."""
+    """После обновления server.py (или detect_domains.py, который он импортирует) перезапускаемся сами, как только
+    нет идущего перевода: перезапуск контейнера вручную не нужен, а идущий перевод не прерывается."""
     me = os.path.abspath(__file__)
-    m0 = os.path.getmtime(me)
+    files = [me, os.path.join(SCRIPTS, 'detect_domains.py')]
+    mt = lambda: [os.path.getmtime(f) if os.path.isfile(f) else 0 for f in files]
+    m0 = mt()
     while True:
         time.sleep(5)
         try:
-            if os.path.getmtime(me) == m0:
+            if mt() == m0:
                 continue
-            compile(open(me, encoding='utf-8').read(), me, 'exec')    # файл дописан и без ошибок
+            for f in files:
+                if os.path.isfile(f):
+                    compile(open(f, encoding='utf-8').read(), f, 'exec')    # файлы дописаны и без ошибок
         except (OSError, SyntaxError, ValueError):
             continue
         with lock:

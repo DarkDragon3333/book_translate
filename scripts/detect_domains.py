@@ -21,6 +21,11 @@ TOP_WORDS = 3            # сколько частых однословных т
 # встречаются в любой книге в другом смысле. Порог подобран 30.09 на Java, Géron, AI Engineering, Pro Git,
 # The API Book, testbook (EPUB и PDF): доля области среди найденных многословных терминов и их минимальное число.
 MIN_SHARE, MIN_MULTI = 0.15, 3
+# Маленькая область (меньше 100 многословных терминов в файле: devops, web, lowlevel, gamedev — с 11.10) набирает мало разных
+# терминов и почти всегда проигрывает по доле огромному programming. Для неё второе правило: ≥ 8 терминов и доля ≥ 8%.
+# Проверено 12.10 на корпусе 209 книг по темам: devops 12 → 18 из 23, web 11 → 17 из 26, lowlevel 11 → 14 из 15;
+# на 112 книгах старого корпуса (Java, Spring) — 2 книги получают web (Full Stack Testing, Jakarta EE), прочие области не меняются.
+SMALL_DOMAIN, SMALL_MULTI, SMALL_SHARE = 100, 8, 0.08
 
 
 class _Text(HTMLParser):
@@ -113,13 +118,16 @@ def detect(path, gdir):
         single = sorted(((c, s, t) for s, (c, t) in hits.items() if ' ' not in s and '-' not in s), reverse=True)
         multi = sum(1 for s in hits if ' ' in s or '-' in s)
         multi_total += multi
-        res[dom] = {'distinct': len(hits), 'multi': multi, 'total': len(read_domain(os.path.join(gdir, f))),
+        terms = read_domain(os.path.join(gdir, f))
+        res[dom] = {'distinct': len(hits), 'multi': multi, 'total': len(terms),
+                    'small': sum(1 for s, _ in terms if ' ' in s or '-' in s) < SMALL_DOMAIN,
                     'occurrences': sum(c for c, _ in hits.values()),
                     'top_single': [{'term': s, 'count': c, 'target': t} for c, s, t in single[:TOP_WORDS]],
                     'top': sorted(hits, key=lambda s: -hits[s][0])[:8]}
     for x in res.values():
         x['share'] = round(x['multi'] / multi_total, 2) if multi_total else 0
-        x['suggest'] = x['multi'] >= MIN_MULTI and x['share'] >= MIN_SHARE
+        x['suggest'] = (x['multi'] >= MIN_MULTI and x['share'] >= MIN_SHARE) or \
+            (x['small'] and x['multi'] >= SMALL_MULTI and x['share'] >= SMALL_SHARE)
     return {'words': words, 'domains': res, 'suggest': [d for d, x in res.items() if x['suggest']]}
 
 
