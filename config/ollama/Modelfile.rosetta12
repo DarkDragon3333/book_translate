@@ -1,0 +1,16 @@
+# rosetta12-ru: yanolja/YanoljaNEXT-Rosetta-12B-2510 (Gemma 3 12B, дообучена на перевод), официальный GGUF IQ4_XS (7,1 ГБ).
+# Эксперимент 12.10.2026, выгрузка слоёв в ОЗУ. Шаблон как у rosetta-ru (chat_template модели:
+#   <start_of_turn>instruction / source / translation). Адаптер rosetta_proxy подхватывает модель по префиксу rosetta.
+# num_gpu 23 из 49 слоёв (подобрано 12.10): авто — 12 слоёв, 2,4 ГБ VRAM; 23 — 3,7 ГБ. Глава Spring 18 — 22 мин.
+FROM hf.co/yanolja/YanoljaNEXT-Rosetta-12B-2510-GGUF:IQ4_XS
+TEMPLATE """{{- if .System }}<start_of_turn>instruction
+{{ .System }}<end_of_turn>
+{{ end }}<start_of_turn>source
+{{ .Prompt }}<end_of_turn>
+<start_of_turn>translation
+"""
+PARAMETER num_gpu 23
+PARAMETER num_ctx 3072
+PARAMETER temperature 0.2
+PARAMETER stop <end_of_turn>
+PARAMETER stop <start_of_turn>

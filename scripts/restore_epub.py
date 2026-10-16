@@ -5,6 +5,7 @@
 data-ikw у заголовка → слова-код в переведённом заголовке снова курсивом/кодом.
 Плюс пробелы у кода: bbm не отдаёт модели код в начале и в конце абзаца и при сборке теряет пробел
 («<code>Error</code>означает», «на<code>new Bird()</code>») — пробел возвращается между тегом и русской буквой.
+Курсив в прозе (опыт ITALICS=1): ⟪…⟫ → <em>…</em>; непарные ⟪ ⟫ убираются (курсив там потерян моделью).
 Использование: python restore_epub.py translated.epub out.epub
 """
 import html as htmlmod, re, sys, zipfile
@@ -104,12 +105,39 @@ def restore(text, stats):
         stats['head'] += 1
         return '<%s%s%s><span class="label">%s</span>' % (m.group(1), m.group(2), m.group(4), m.group(3).replace('&quot;', '"'))
     text = HEAD_LABEL.sub(head, text)
+    if '⟪' in text or '⟫' in text:
+        text = restore_italics(text, stats)
     return fix_spaces(text, stats)
+
+
+def balanced(s):
+    stack = []
+    for m in re.finditer(r'<(/?)([a-zA-Z][\w:-]*)[^>]*?(/?)>', s):
+        if m.group(3):
+            continue
+        if not m.group(1):
+            stack.append(m.group(2))
+        elif not stack or stack.pop() != m.group(2):
+            return False
+    return not stack
+
+
+def restore_italics(text, stats):
+    def one(m):
+        if '<' in m.group(1) and not balanced(m.group(1)):
+            return m.group(1)
+        stats['курсив'] += 1
+        return '<em>%s</em>' % m.group(1)
+    text = re.sub(r'⟪([^⟪⟫]{1,400}?)⟫', one, text)
+    n = text.count('⟪') + text.count('⟫')
+    stats['курсив без пары'] += n
+    return text.replace('⟪', '').replace('⟫', '')
 
 
 def main(src, dst):
     zin, zout = zipfile.ZipFile(src), zipfile.ZipFile(dst, 'w')
-    stats = {'em': 0, 'num': 0, 'span': 0, 'head': 0, 'i': 0, 'opt': 0, 'код в заголовках': 0, 'пробелы': 0}
+    stats = {'em': 0, 'num': 0, 'span': 0, 'head': 0, 'i': 0, 'opt': 0, 'код в заголовках': 0, 'пробелы': 0,
+             'курсив': 0, 'курсив без пары': 0}
     for info in zin.infolist():
         data = zin.read(info.filename)
         if info.filename.endswith(HTML) and '<nav' not in data.decode('utf-8', 'replace'):
@@ -121,6 +149,8 @@ def main(src, dst):
           % (stats['em'], stats['span'], stats['head'], stats['num']))
     print('    Код курсивом %d, код в заголовках %d, буквы вариантов %d, пробелы у кода %d'
           % (stats['i'], stats['код в заголовках'], stats['opt'], stats['пробелы']))
+    if stats['курсив'] or stats['курсив без пары']:
+        print('    Курсив в прозе: возвращён %d, непарных пометок убрано %d' % (stats['курсив'], stats['курсив без пары']))
 
 
 if __name__ == '__main__':

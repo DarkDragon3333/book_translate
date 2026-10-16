@@ -21,6 +21,7 @@ SCRIPTS = os.environ.get('SCRIPTS', '/scripts')
 CONFIG = os.environ.get('CONFIG', '/config')
 OLLAMA = os.environ.get('OLLAMA_URL', 'http://ollama:11434')
 DOCLING = os.environ.get('DOCLING_URL', 'http://docling:5001')
+REMEDY = os.environ.get('REMEDY_URL', 'http://remedy:8091')
 DEFAULT_MODEL = os.environ.get('MODEL', 'rosetta-ru')
 PORT = int(os.environ.get('GUI_PORT', '8090'))
 STATE = os.path.join(BOOKS, '.gui')
@@ -151,7 +152,11 @@ def external_runs():
                  'created': started, 'started': started, 'finished': None, 'rc': None, 'workdir': w, 'log': None,
                  'note': 'Запущен командой в PowerShell: лог — в том окне, остановить — Ctrl+C там же.'}
             _ext['objs'][w] = j
-        j['model'] = 'rosetta-ru' if os.path.isfile(os.path.join(w, '.rosetta_log.jsonl')) else ''
+        try:
+            with open(os.path.join(w, '.model'), encoding='utf-8') as f:
+                j['model'] = f.read().strip()
+        except OSError:
+            j['model'] = 'rosetta-ru' if os.path.isfile(os.path.join(w, '.rosetta_log.jsonl')) else ''
         res.append(j)
     _ext.update(t=now(), list=res)
     return res
@@ -172,6 +177,13 @@ def external_stage(j):
         return 'Термины и оглавление'
     if 'work_bilingual.epub' in names:
         return 'Восстановление разметки'
+    if '.hybrid_phase' in names:
+        try:
+            with open(os.path.join(w, '.hybrid_phase'), encoding='utf-8') as f:
+                ph = f.read().strip()
+        except OSError:
+            ph = ''
+        return {'score': HYB_SCORE, 'strong': HYB_STRONG}.get(ph, 'Перевод')
     if '.work.temp.bin' in names or '.rosetta_log.jsonl' in names:
         return 'Перевод'
     if 'work.epub' in names:
@@ -350,28 +362,54 @@ def _chapter_texts(path):
     return res
 
 
+_cov_todo = {}                  # name → (ext, key): посчитать в фоне
+_cov_wake = threading.Event()
+
+
 def coverage(name, ext):
-    """Сколько глав переведено: глава с текстом (50+ букв) считается переведённой, если в ней больше 30% кириллицы."""
+    """Сколько глав переведено: глава с текстом (50+ букв) считается переведённой, если в ней больше 30% кириллицы.
+    Считается в фоне (14.10): после нескольких пробных прогонов /api/books разбирал десяток EPUB подряд и не укладывался
+    в 30 с. Пока не посчитано — None (книга показывается «переведена» без числа глав)."""
     en, ru = en_epub(name, ext), ru_epub(name, ext)
     if not (os.path.isfile(en) and os.path.isfile(ru)):
         return None
     key = [en, os.path.getmtime(en), ru, os.path.getmtime(ru)]
-    if _cov_cache.get(name, [None])[0] != key:
-        try:
-            E, R = _chapter_texts(en), _chapter_texts(ru)
-            files = {}
-            for f, t in E.items():
-                if len(re.findall(r'[A-Za-z]', t)) < 50:
-                    continue                          # обложка, пустые страницы — не считаем
-                r = R.get(f, '')
-                cyr, lat = len(re.findall('[А-Яа-яЁё]', r)), len(re.findall(r'[A-Za-z]', r))
-                files[f] = cyr > 0.3 * (cyr + lat) if cyr + lat else False
-            cov = {'files': files, 'done': sum(files.values()), 'total': len(files)}
-        except Exception:
-            cov = None
-        _cov_cache[name] = [key, cov]
-        _cache_dirty[0] = True
-    return _cov_cache[name][1]
+    c = _cov_cache.get(name)
+    if c and c[0] == key:
+        return c[1]
+    _cov_todo[name] = (ext, key)
+    _cov_wake.set()
+    return c[1] if c else None
+
+
+def coverage_worker():
+    while True:
+        _cov_wake.wait()
+        _cov_wake.clear()
+        while _cov_todo:
+            name, (ext, key) = _cov_todo.popitem()
+            if _cov_cache.get(name, [None])[0] == key:
+                continue
+            _coverage_calc(name, ext, key)
+            time.sleep(0.2)                       # отдать GIL обработчикам запросов
+
+
+def _coverage_calc(name, ext, key):
+    en, ru = en_epub(name, ext), ru_epub(name, ext)
+    try:
+        E, R = _chapter_texts(en), _chapter_texts(ru)
+        files = {}
+        for f, t in E.items():
+            if len(re.findall(r'[A-Za-z]', t)) < 50:
+                continue                          # обложка, пустые страницы — не считаем
+            r = R.get(f, '')
+            cyr, lat = len(re.findall('[А-Яа-яЁё]', r)), len(re.findall(r'[A-Za-z]', r))
+            files[f] = cyr > 0.3 * (cyr + lat) if cyr + lat else False
+        cov = {'files': files, 'done': sum(files.values()), 'total': len(files)}
+    except Exception:
+        cov = None
+    _cov_cache[name] = [key, cov]
+    _cache_dirty[0] = True
 
 
 def book_state(name, ext, runs=()):
@@ -474,12 +512,19 @@ def _detect_key(path):
 
 
 def _detect_run(book, path, key, cache):
+    # Отдельным процессом с пониженным приоритетом (14.10): в потоке сервера разбор большой книги держал GIL,
+    # и /api/jobs, /api/books не отвечали по 30 с («Нет связи с интерфейсом: signal timed out»).
     try:
-        if SCRIPTS not in sys.path:
-            sys.path.insert(0, SCRIPTS)
-        import detect_domains
+        os.makedirs(DETECT_DIR, exist_ok=True)
+        tmp = cache + '.run.json'
         with detect_lock:
-            r = detect_domains.detect(path, os.path.join(CONFIG, 'glossary'))
+            pr = subprocess.run(['nice', '-n', '10', sys.executable, os.path.join(SCRIPTS, 'detect_domains.py'), path,
+                                 '--dir', os.path.join(CONFIG, 'glossary'), '--json', tmp],
+                                capture_output=True, text=True, timeout=600)
+        if pr.returncode != 0:
+            raise RuntimeError((pr.stderr or pr.stdout).strip()[-500:])
+        r = json.load(open(tmp, encoding='utf-8'))
+        os.remove(tmp)
         r['key'], r['from'] = key, os.path.basename(path)
         os.makedirs(DETECT_DIR, exist_ok=True)
         with open(cache + '.tmp', 'w', encoding='utf-8') as f:
@@ -520,20 +565,83 @@ def http_json(url, data=None, timeout=3):
         return json.loads(r.read() or b'{}')
 
 
+# Режимы перевода: подписи в списке моделей и порядок (13.10: Rosetta-12B — «качество», слепой тест 10 : 4 против 4B)
+MODEL_INFO = {
+    'rosetta-ru': 'быстрый режим',
+    'hybrid': 'гибрид: быстрый + качество',
+    'rosetta12-ru': 'качество, в ~6 раз медленнее',
+}
+QUALITY_MODEL = 'rosetta12-ru'
+# Гибрид (14.10): rosetta-ru переводит всё, ReMedy-9B отбирает худшие абзацы, rosetta12-ru переводит их заново.
+# Доля текста для 12B — HYBRID_SHARE (5–80%, по умолчанию 40: на двух свежих главах ~83% ошибок смысла 4B за ~4× времени 4B).
+HYBRID = 'hybrid'
+HYBRID_SHARE = (5, 80, 40)          # от, до, по умолчанию
+
+
 def models():
     try:
         tags = http_json(OLLAMA + '/api/tags')['models']
     except Exception:
         return [DEFAULT_MODEL]
     names = [m['name'].split(':latest')[0] for m in tags]
-    names = [n for n in names if not n.startswith('hf.co/') and n != 'translategemma:4b']
-    return sorted(names, key=lambda n: (n != DEFAULT_MODEL, n))
+    # базы моделей (hf.co/…) не предлагаем; translategemma с 14.10 тоже: она нужна только пути PDF → PDF (pdf2zh, командой)
+    names = [n for n in names if not n.startswith('hf.co/') and not n.startswith('translategemma')]
+    if hybrid_state(names)[0]:
+        names.append(HYBRID)
+    order = [DEFAULT_MODEL] + [m for m in MODEL_INFO if m != DEFAULT_MODEL]
+    return sorted(names, key=lambda n: (order.index(n) if n in order else len(order), n))
+
+
+def hybrid_state(names):
+    """(готов ли гибрид, почему нет) — нужны обе модели Rosetta и модель ReMedy в сервисе remedy."""
+    if 'rosetta-ru' not in names or QUALITY_MODEL not in names:
+        return False, 'нужен режим «качество» (%s) — см. «Помощь»' % QUALITY_MODEL
+    r = usage.get('remedy')
+    if r is None:
+        return False, 'сервис оценки remedy не отвечает (docker compose up -d remedy)'
+    if not r.get('available'):
+        return False, 'нет модели ReMedy (models\\remedy9b) — см. «Помощь»'
+    return True, ''
+
+
+def hybrid_info():
+    try:
+        tags = http_json(OLLAMA + '/api/tags')['models']
+        names = [m['name'].split(':latest')[0] for m in tags]
+    except Exception:
+        names = []
+    ok, why = hybrid_state(names)
+    return {'ready': ok, 'why': why, 'min': HYBRID_SHARE[0], 'max': HYBRID_SHARE[1], 'default': HYBRID_SHARE[2]}
+
+
+class ModelConflict(ValueError):
+    """Прерванный перевод книги начат другой моделью: bbm продолжает только той же (отпечаток в .work.temp.bin)."""
+    def __init__(self, prev, model):
+        super().__init__('Перевод этой книги прерван на модели %s, а выбрана %s. Продолжить можно только той же моделью.'
+                         % (prev, model))
+        self.prev, self.model = prev, model
+
+
+# Служебные файлы прерванного перевода bbm; без них epub.sh начинает перевод заново (английский EPUB из PDF не трогаем)
+PROGRESS_FILES = ('.work.temp.bin', 'work_bilingual_temp.epub', 'work_plan.json', '.model', '.hybrid_phase')
+
+
+def interrupted_model(w):
+    """Модель прерванного перевода в папке книги или None (перевода нет или модель не записана — до 13.10).
+    Гибрид между проходами (.hybrid_phase без .work.temp.bin) — тоже прерванный перевод."""
+    if not os.path.isfile(os.path.join(w, '.work.temp.bin')) and not os.path.isfile(os.path.join(w, '.hybrid_phase')):
+        return None
+    try:
+        with open(os.path.join(w, '.model'), encoding='utf-8') as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
 
 
 # ---------------- загрузка компьютера ----------------
 # CPU и RAM — виртуальной машины Docker (WSL): все процессы перевода живут в ней, и именно её лимит памяти
 # (.wslconfig) приводит к «Cannot allocate memory». GPU — через nvidia-smi (контейнеру дан доступ к GPU).
-usage = {'cpu': None, 'ram': None, 'gpu': None, 'ollama': [], 'docling': False}
+usage = {'cpu': None, 'ram': None, 'gpu': None, 'ollama': [], 'docling': False, 'remedy': None}
 
 
 def _cpu_times():
@@ -610,6 +718,15 @@ def probe_ollama():
         time.sleep(3)
 
 
+def probe_remedy():
+    while True:
+        try:
+            usage['remedy'] = http_json(REMEDY + '/status', timeout=3)
+        except Exception:
+            usage['remedy'] = None
+        time.sleep(5)
+
+
 def probe_docling():
     while True:
         try:
@@ -622,8 +739,9 @@ def probe_docling():
 
 def system_status():
     """Последние значения из фоновых потоков — без сетевых запросов."""
+    r = usage['remedy']
     return {'ollama': usage['ollama'], 'docling': usage['docling'], 'cpu': usage['cpu'], 'ram': usage['ram'],
-            'gpu': usage['gpu'], 'cores': os.cpu_count()}
+            'gpu': usage['gpu'], 'cores': os.cpu_count(), 'remedy_loaded': bool(r and r.get('loaded'))}
 
 
 # ---------------- прогресс ----------------
@@ -702,7 +820,10 @@ _TS = r'^\[\d\d:\d\d:\d\d\] '
 STAGES = [(_TS + r'A/B Разметка Docling', 'Разметка Docling'), (_TS + r'B/B Сборка английского', 'Сборка английского EPUB'),
           (_TS + r'1/6 Глоссарий', 'Глоссарий'), (_TS + r'2/6 ', 'Подготовка книги'), (_TS + r'3/6 Перевод', 'Перевод'),
           (_TS + r'4/6 Восстановление', 'Восстановление разметки'), (_TS + r'5/6 ', 'Термины и оглавление'),
+          (_TS + r'3/6 Перевод \(гибрид 2/3', 'Гибрид: отбор абзацев'),
+          (_TS + r'3/6 Перевод \(гибрид 3/3', 'Гибрид: перевод отобранных'),
           (_TS + r'6/6 Проверка', 'Проверка'), (_TS + r'Готово[ :(]', 'Готово'), (_TS + r'ОШИБКА', 'Ошибка')]
+HYB_SCORE, HYB_STRONG = 'Гибрид: отбор абзацев', 'Гибрид: перевод отобранных'
 
 
 def tail(path, nbytes=40000):
@@ -778,8 +899,10 @@ def progress(j):
     if st.get('bbm_total') and p['stage'] == 'Перевод':
         j['units'] = st['bbm_total']
         p['exact'] = True
+    if p['stage'] in (HYB_SCORE, HYB_STRONG):
+        return hybrid_progress(j, p)
     if j.get('units'):
-        done = count_lines(os.path.join(w, '.rosetta_log.jsonl')) if j['model'].startswith('rosetta') else None
+        done = count_lines(os.path.join(w, '.rosetta_log.jsonl')) if j['model'].startswith('rosetta') or j['model'] == HYBRID else None
         p['total'] = j['units']
         if done is not None:
             p['done'] = done
@@ -793,6 +916,32 @@ def progress(j):
                 rate = (hist[-1][1] - hist[0][1]) / (hist[-1][0] - hist[0][0])
                 p['eta_min'] = round(max(0, j['units'] - done) / rate / 60) if rate > 0 and not p.get('over') else None
                 p['per_min'] = round(rate * 60, 1)
+    return p
+
+
+def hybrid_progress(j, p):
+    """Гибрид, проходы 2 и 3: оценено ReMedy из абзацев быстрого прохода / переведено 12B из отобранных."""
+    w = j['workdir']
+    if p['stage'] == HYB_SCORE:
+        total = count_lines(os.path.join(w, '.hybrid_fast.jsonl'))
+        done = count_lines(os.path.join(w, '.hybrid_qe.jsonl'))
+    else:
+        try:
+            total = json.load(open(os.path.join(w, '.hybrid_pick.json'), encoding='utf-8'))['n']
+        except (OSError, ValueError, KeyError):
+            return p
+        done = count_lines(os.path.join(w, '.hybrid_done'))
+    if not total:
+        return p
+    p['total'], p['done'] = total, min(done or 0, total)
+    hist = j.setdefault('_rate_h', {}).setdefault(p['stage'], [])
+    if not hist or hist[-1][1] != p['done']:
+        hist.append((now(), p['done']))
+        del hist[:-60]
+    if len(hist) >= 2 and hist[-1][1] > hist[0][1]:
+        rate = (hist[-1][1] - hist[0][1]) / (hist[-1][0] - hist[0][0])
+        p['eta_min'] = round(max(0, total - p['done']) / rate / 60) if rate > 0 else None
+        p['per_min'] = round(rate * 60, 1)
     return p
 
 
@@ -829,17 +978,30 @@ def new_job(p):
     model = p.get('model') or DEFAULT_MODEL
     if not re.fullmatch(r'[\w.:\-/]+', model):
         raise ValueError('Странное имя модели')
+    share = None
+    if model == HYBRID:
+        try:
+            share = int(p.get('share') or HYBRID_SHARE[2])
+        except (TypeError, ValueError):
+            raise ValueError('Доля текста для гибрида — целое число процентов')
+        if not HYBRID_SHARE[0] <= share <= HYBRID_SHARE[1]:
+            raise ValueError('Доля текста для гибрида — от %d до %d%%' % HYBRID_SHARE[:2])
     with lock:
         if any(x['book'] == book for x in external_runs()):
             raise ValueError('Эта книга сейчас переводится командой в PowerShell — дождись окончания')
         busy = [x for x in jobs if x['status'] in ('queued', 'running') and x['book'] == book]
         if busy:
             raise ValueError('Эта книга уже в очереди или переводится')
+        w = workdir(name, ext, pages)
+        prev = interrupted_model(w)
+        fresh = bool(p.get('fresh'))
+        if prev and prev != model and not fresh and not p.get('en_only'):
+            raise ModelConflict(prev, model)
         jid = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:4]
         j = {'id': jid, 'book': book, 'name': name, 'ext': ext, 'mode': 'pdf-epub' if ext == 'pdf' else 'epub',
              'domains': domains, 'pages': pages, 'only': only, 'en_only': bool(p.get('en_only')) and ext == 'pdf',
-             'model': model, 'status': 'queued', 'created': now(), 'started': None, 'finished': None, 'rc': None,
-             'workdir': workdir(name, ext, pages), 'log': os.path.join(LOGS, jid + '.log'), 'note': ''}
+             'model': model, 'share': share, 'status': 'queued', 'created': now(), 'started': None, 'finished': None, 'rc': None,
+             'workdir': w, 'log': os.path.join(LOGS, jid + '.log'), 'note': '', 'fresh': fresh and bool(prev)}
         jobs.append(j)
         save()
     wake.set()
@@ -856,10 +1018,19 @@ def run(j):
                 j['note'] = 'Жду запуска разметки PDF…'
             time.sleep(5)
         j['note'] = ''
+    if j.get('fresh'):                  # пользователь согласился начать заново другой моделью — сбрасываем прогресс bbm
+        for f in PROGRESS_FILES:
+            try:
+                os.remove(os.path.join(j['workdir'], f))
+            except FileNotFoundError:
+                pass
+        j['fresh'] = False
     env = dict(os.environ)
     env.update({'MODEL': j['model'], 'PYTHONUNBUFFERED': '1'})
-    for k in ('PAGES', 'ONLY', 'EN_ONLY', 'PIPELINE'):
+    for k in ('PAGES', 'ONLY', 'EN_ONLY', 'PIPELINE', 'HYBRID_SHARE'):
         env.pop(k, None)
+    if j['model'] == HYBRID:
+        env['HYBRID_SHARE'] = str(j.get('share') or HYBRID_SHARE[2])
     if j['pages']:
         env['PAGES'] = j['pages']
     if j['only']:
@@ -870,8 +1041,9 @@ def run(j):
         env['PIPELINE'] = 'docling'
     cmd = ['sh', os.path.join(SCRIPTS, 'translate.sh'), j['book'], ','.join(j['domains']) or 'base']
     with open(j['log'], 'a', encoding='utf-8') as log:
-        log.write('[интерфейс] %s: %s  (MODEL=%s PAGES=%s ONLY=%s EN_ONLY=%s)\n' % (
-            time.strftime('%Y-%m-%d %H:%M:%S'), ' '.join(cmd[2:]), j['model'], j['pages'] or '-',
+        log.write('[интерфейс] %s: %s  (MODEL=%s%s PAGES=%s ONLY=%s EN_ONLY=%s)\n' % (
+            time.strftime('%Y-%m-%d %H:%M:%S'), ' '.join(cmd[2:]), j['model'],
+            ' HYBRID_SHARE=' + env['HYBRID_SHARE'] if 'HYBRID_SHARE' in env else '', j['pages'] or '-',
             env.get('ONLY', '-'), env.get('EN_ONLY', '-')))
         log.flush()
         pr = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -991,7 +1163,7 @@ def retry(jid):
     if not j:
         raise ValueError('Нет такой задачи')
     return new_job({'book': j['book'], 'domains': j['domains'], 'pages': j['pages'], 'only': j['only'],
-                    'model': j['model'], 'en_only': j['en_only']})
+                    'model': j['model'], 'share': j.get('share'), 'en_only': j['en_only']})
 
 
 def pairs(jid, offset, limit, bad_only):
@@ -1126,6 +1298,22 @@ def epub_file(side, book, member):
         return None
 
 
+def delete_job(jid):
+    """Удалить одну завершённую задачу из истории (и её лог). Книга и переводы остаются."""
+    with lock:
+        j = find(jid)
+        if not j:
+            raise ValueError('Нет такой задачи')
+        if j['status'] in ('queued', 'running'):
+            raise ValueError('Задача ещё не завершена — сначала остановите её')
+        try:
+            os.remove(j['log'])
+        except OSError:
+            pass
+        jobs.remove(j)
+        save()
+
+
 def clear_history():
     with lock:
         keep = [j for j in jobs if j['status'] in ('queued', 'running')]
@@ -1175,7 +1363,9 @@ class H(BaseHTTPRequestHandler):
             if u.path == '/api/books':
                 return self.send(200, books())
             if u.path == '/api/options':
-                return self.send(200, {'glossaries': glossaries(), 'models': models(), 'default_model': DEFAULT_MODEL})
+                return self.send(200, {'glossaries': glossaries(), 'models': models(), 'default_model': DEFAULT_MODEL,
+                                       'model_info': MODEL_INFO, 'quality_model': QUALITY_MODEL,
+                                       'hybrid': hybrid_info()})
             if u.path == '/api/ping':
                 return self.send(200, {'ok': True})
             if u.path == '/api/status':
@@ -1227,8 +1417,11 @@ class H(BaseHTTPRequestHandler):
         try:
             if u.path == '/api/jobs':
                 return self.send(200, public(new_job(self.body())))
-            m = re.fullmatch(r'/api/jobs/([\w\-]+)/(stop|retry)', u.path)
+            m = re.fullmatch(r'/api/jobs/([\w\-]+)/(stop|retry|delete)', u.path)
             if m:
+                if m.group(2) == 'delete':
+                    delete_job(m.group(1))
+                    return self.send(200, {'ok': True})
                 if m.group(2) == 'stop':
                     stop(m.group(1))
                     return self.send(200, {'ok': True})
@@ -1239,6 +1432,8 @@ class H(BaseHTTPRequestHandler):
                 http_json(DOCLING + '/v1/clear/converters', timeout=30)
                 return self.send(200, {'ok': True})
             return self.send(404, {'error': 'нет такого адреса'})
+        except ModelConflict as e:
+            return self.send(409, {'error': str(e), 'conflict': {'prev': e.prev, 'model': e.model}})
         except ValueError as e:
             return self.send(400, {'error': str(e)})
         except Exception as e:
@@ -1270,6 +1465,8 @@ def main():
     threading.Thread(target=sampler, daemon=True).start()
     threading.Thread(target=probe_ollama, daemon=True).start()
     threading.Thread(target=probe_docling, daemon=True).start()
+    threading.Thread(target=probe_remedy, daemon=True).start()
+    threading.Thread(target=coverage_worker, daemon=True).start()
 
     def warm():                      # кэши с диска + досчёт новых книг: первый /api/books на большой библиотеке — секунды
         try:

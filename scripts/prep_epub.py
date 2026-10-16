@@ -23,8 +23,12 @@
 Использование:
   python prep_epub.py in.epub out.epub [--keep-map keep.json]
   python prep_epub.py --index-files book.epub   # файлы указателя через запятую (для --exclude_filelist)
+
+Опыт 14.10 (переменная окружения ITALICS=1): курсив в прозе (<em>термин</em>, <i>слово</i> — не переменные и не код)
+→ ⟪термин⟫. bbm отдаёт модели только текст, и курсив пропадал (Géron гл. 10: em 69 → 41); с пометкой адаптер
+показывает его модели как <em>…</em>, restore_epub возвращает <em>. Вне pre/code/math/заголовков.
 """
-import html as htmlmod, json, posixpath, re, sys, zipfile
+import html as htmlmod, json, os, posixpath, re, sys, zipfile
 
 EM = re.compile(r'<em(\s[^>]*)?>([^<]*)</em>')
 LABEL = re.compile(r'<span(\s[^>]*\bclass="label"[^>]*)>([^<]*)</span>')
@@ -205,7 +209,25 @@ def convert(text, stats, keep, italic_code=True):
             out.append('<%s%s>%s</%s>' % (pieces[i + 1], pieces[i + 2] or '', pieces[i + 3], pieces[i + 1]))
     text = ''.join(out)
     text = LABEL.sub(label, text)
-    return NUM_BLOCK.sub(num, text)
+    text = NUM_BLOCK.sub(num, text)
+    if os.environ.get('ITALICS') == '1':
+        text = mark_italics(text, stats)
+    return text
+
+
+ITAL_ANY = re.compile(r'<(em|i)(?:\s[^>]*)?>([^<⟪⟫]{1,200})</\1>')
+NO_ITAL = re.compile(r'(<(pre|code|math|script|style|h[1-6])\b.*?</\2>)', re.S)
+
+
+def mark_italics(text, stats):
+    """Курсив в прозе → ⟪…⟫ (переменные и код уже стали <var>). pre/code/math/заголовки не трогаются."""
+    parts = NO_ITAL.split(text)              # [вне, блок, тег, вне, блок, тег, …]
+    for i in range(0, len(parts), 3):
+        def one(m):
+            stats['курсив ⟪⟫'] = stats.get('курсив ⟪⟫', 0) + 1
+            return '⟪%s⟫' % m.group(2)
+        parts[i] = ITAL_ANY.sub(one, parts[i])
+    return ''.join(p for k, p in enumerate(parts) if k % 3 != 2)
 
 
 def opf_dir(z):
@@ -249,6 +271,8 @@ def main(src, dst, keep_path=None):
     print('    Код курсивом: %d%s, код в заголовках: %d, буквы ответов: %d, ссылки на варианты: %d'
           % (stats['код курсивом'], '' if italic_code else ' (только вид кода — книга не набирает код курсивом)',
              stats['код в заголовках'], stats['буквы ответов'], stats['ссылки на варианты']))
+    if stats.get('курсив ⟪⟫'):
+        print('    Курсив в прозе помечен для модели (ITALICS=1): %d' % stats['курсив ⟪⟫'])
 
 
 if __name__ == '__main__':

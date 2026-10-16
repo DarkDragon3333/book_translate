@@ -218,3 +218,8 @@ i18n,i18n,
 TLU,TLU,
 LTU,LTU,
 MLP,MLP,
+# 13.10.2026
+NaN,NaN,
+autograd,autograd,
+Wide & Deep,Wide & Deep,
+softmax,softmax,

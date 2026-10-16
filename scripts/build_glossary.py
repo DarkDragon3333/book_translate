@@ -184,10 +184,19 @@ def main():
         for s, t in terms.values():
             out.write('%s → %s\n' % (s, t))
     else:
+        # pdf2zh не знает смысла по контексту (senses.csv): многозначные слова, которые подсказываются только
+        # при признаках в предложении (default none: bias, image…), ему не отдаём — иначе «образ» на каждой картинке
+        none = set()
+        sp = os.path.join(os.path.dirname(os.path.abspath(a.dir)), 'senses.csv')
+        if os.path.isfile(sp):
+            with open(sp, encoding='utf-8') as f:
+                for r in csv.DictReader(line for line in f if not line.startswith('#')):
+                    if (r.get('default') or '').strip() == 'none':
+                        none.add(r['word'].strip().lower())
         w = csv.writer(out, lineterminator='\n')
         w.writerow(['source', 'target', 'tgt_lng'])
         for s, t in terms.values():
-            if s != t:
+            if s != t and s.lower() not in none:
                 w.writerow([s, t, ''])
     text = out.getvalue()
     if a.out:

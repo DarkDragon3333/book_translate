@@ -1,0 +1,18 @@
+# rosetta7-ru: yanolja/YanoljaNEXT-EEVE-Rosetta-7B-2602 (Seed-X-PPO-7B + рецепт Rosetta, токенизатор Gemma), GGUF Q4_K_M от mradermacher.
+# Эксперимент 12.10.2026, выгрузка слоёв в ОЗУ. Шаблон как у rosetta-ru (chat_template модели:
+#   <start_of_turn>instruction / source / translation). Адаптер rosetta_proxy подхватывает модель по префиксу rosetta.
+# num_gpu 24 из 33 слоёв (подобрано 12.10): авто — 13 слоёв, 2,3 ГБ VRAM, 11,5 ток/с; 24 — 3,75 ГБ, 18,7 ток/с.
+# В GGUF от mradermacher у <start_of_turn> тип NORMAL → шаблон разбирался на куски текста, модель зацикливалась.
+# Исправленная копия (тип CONTROL) — scripts/tools/gguf_fix_special.py из блоба hf.co/mradermacher/…:Q4_K_M.
+FROM /root/.ollama/patched/eeve-rosetta-7b-2602-q4_k_m-fixed.gguf
+TEMPLATE """{{- if .System }}<start_of_turn>instruction
+{{ .System }}<end_of_turn>
+{{ end }}<start_of_turn>source
+{{ .Prompt }}<end_of_turn>
+<start_of_turn>translation
+"""
+PARAMETER num_gpu 24
+PARAMETER num_ctx 3072
+PARAMETER temperature 0.2
+PARAMETER stop <end_of_turn>
+PARAMETER stop <start_of_turn>

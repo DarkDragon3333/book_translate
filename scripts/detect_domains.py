@@ -88,14 +88,22 @@ def read_domain(path):
                 if (r.get('source') or '').strip() and not r['source'].startswith('#')]
 
 
-def count(term, text, low):
+WORDS = re.compile(r'\w+')
+
+
+def count(term, text, low, words=None):
+    """Сколько раз термин (и его мн. ч.) стоит в тексте целым словом. words = (слова text, слова low) — быстрый отсев:
+    первое слово термина в найденном месте тоже стоит целым словом, поэтому если его нет среди слов книги, термина нет
+    (14.10: без отсева ~2400 регулярок по всему тексту книги — до минуты на большую книгу, результат тот же)."""
     forms = [term] + plurals(term)
     n = 0
     for f in forms:
-        if f == f.lower():
-            n += len(re.findall(r'(?<!\w)' + re.escape(f) + r'(?!\w)', low))
-        else:
-            n += len(re.findall(r'(?<!\w)' + re.escape(f) + r'(?!\w)', text))
+        src = low if f == f.lower() else text
+        if words is not None:
+            w = WORDS.search(f)
+            if w and w.group(0) not in words[src is low]:
+                continue
+        n += len(re.findall(r'(?<!\w)' + re.escape(f) + r'(?!\w)', src))
     return n
 
 
@@ -104,6 +112,7 @@ def detect(path, gdir):
     text = re.sub(r'\s+', ' ', text)
     low = text.lower()
     words = len(re.findall(r'[A-Za-z]{2,}', text))
+    vocab = (set(WORDS.findall(text)), set(WORDS.findall(low)))     # [False] — слова text, [True] — слова low
     res = {}
     multi_total = 0
     for f in sorted(os.listdir(gdir)):
@@ -112,7 +121,7 @@ def detect(path, gdir):
         dom = f[:-4]
         hits = {}
         for s, t in read_domain(os.path.join(gdir, f)):
-            c = count(s, text, low)
+            c = count(s, text, low, vocab)
             if c:
                 hits[s] = (c, t)
         single = sorted(((c, s, t) for s, (c, t) in hits.items() if ' ' not in s and '-' not in s), reverse=True)

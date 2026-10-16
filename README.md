@@ -12,6 +12,10 @@
 
 Модели (рассчитаны на видеокарты от 4 ГБ):
 - EPUB и PDF → EPUB — [YanoljaNEXT-Rosetta-4B](https://huggingface.co/yanolja/YanoljaNEXT-Rosetta-4B-2511) (модель-переводчик на Gemma 3, понимает глоссарий);
+  режим «качество» (по желанию) — [YanoljaNEXT-Rosetta-12B](https://huggingface.co/yanolja/YanoljaNEXT-Rosetta-12B-2510): ошибок смысла
+  примерно втрое меньше, но модель не помещается в 4 ГБ, часть слоёв работает в оперативной памяти — в ~6 раз медленнее;
+  гибридный режим (по желанию) — Rosetta-4B переводит всю книгу, модель оценки [ReMedy-9B](https://huggingface.co/ShaomuTan/ReMedy-9B-22)
+  отмечает худшие абзацы, Rosetta-12B переводит их заново (доля текста настраивается);
 - PDF → PDF — [TranslateGemma 4B](https://ollama.com/library/translategemma).
 
 ## Требования
@@ -63,6 +67,24 @@ docker compose logs -f ollama-init                     # ход загрузки
 docker compose ps -a              # ollama — healthy, ollama-init — Exited (0)
 docker compose logs ollama-init   # «Модель translategemma-gpu готова», «Модель rosetta-ru готова»
 ```
+
+Режим «качество» ставится отдельно (7,1 ГБ; нужно 16 ГБ ОЗУ и не меньше 8 ГБ памяти для Docker/WSL):
+```
+docker compose exec ollama ollama pull hf.co/yanolja/YanoljaNEXT-Rosetta-12B-2510-GGUF:IQ4_XS
+docker compose up -d ollama-init  # «Модель rosetta12-ru готова»
+```
+
+Для гибридного режима нужны режим «качество» и модель оценки ReMedy-9B в `models/remedy9b` (готовится один раз:
+скачивание 18 ГБ, на время подготовки ~35 ГБ на диске, в итоге 6 ГБ). У llama.cpp нет головы-оценщика Gemma 2,
+поэтому модель делится на тело (GGUF) и голову (`score.npy`):
+```
+docker build -t bt-xcl:1 experiments/qe
+docker run --rm -v ./models:/models -v ./experiments/qe/remedy_local:/w bt-xcl:1 python /w/prepare.py
+docker run --rm -v ./models:/models ghcr.io/ggml-org/llama.cpp:full-cuda@sha256:3d4d8201cc9d1e88227aab9a66ba696335ffa22ef94eb3e47377b2736c0bbec7 --convert /models/remedy9b/hf --outtype f16 --outfile /models/remedy9b/remedy9b-f16.gguf
+docker run --rm -v ./models:/models ghcr.io/ggml-org/llama.cpp:full-cuda@sha256:3d4d8201cc9d1e88227aab9a66ba696335ffa22ef94eb3e47377b2736c0bbec7 --quantize /models/remedy9b/remedy9b-f16.gguf /models/remedy9b/remedy9b-Q5_K_M.gguf Q5_K_M
+docker compose up -d remedy && docker compose logs remedy   # «модель models/remedy9b/remedy9b-Q5_K_M.gguf (есть)»
+```
+После проверки можно удалить `models/remedy9b/hf` и `remedy9b-f16.gguf` (нужны только `remedy9b-Q5_K_M.gguf` и `score.npy`).
 
 ### Удаление
 
@@ -190,6 +212,21 @@ docker compose run --rm translate-pdf book.pdf  [области]    # PDF → р
 ```
 
 `[области]` — тематические глоссарии через запятую (см. [Глоссарий](#глоссарий)), например `programming` или `ml,math`.
+
+### Гибридный режим
+
+```
+docker compose run --rm -e MODEL=hybrid -e HYBRID_SHARE=40 translate book.epub [области]
+```
+Три прохода: (1) Rosetta-4B переводит всю книгу; (2) отбор абзацев — сначала со сбоями меток и несуществующими словами
+(ru_check), затем худшие по оценке ReMedy-9B, пока не наберётся `HYBRID_SHARE` процентов текста (5–80, по умолчанию 40);
+(3) Rosetta-12B переводит отобранные абзацы, остальные берутся из прохода 1 без модели. Модели в 4 ГБ видеопамяти
+вместе не помещаются, поэтому на проходе 2 модели Ollama выгружаются, а сервис `remedy` загружает ReMedy
+и после оценки выгружает. Время ≈ (1,5 + доля × 6,5) от быстрого режима (замер 14.10 на главе Spring: 40% — около 4×, 20% — около 2,8×;
+Rosetta-12B целиком — 5,6×): проход ReMedy ~1 с на абзац, а короткие абзацы 12B переводит дольше, чем по их доле текста. Проверка на двух свежих главах (18 ошибок смысла 4B): 40% текста исправили ~83% ошибок,
+20% — ~56%; гладкие ошибки (правдоподобный, но неверный термин) ReMedy замечает плохо. Прерванный перевод продолжается
+с того прохода, где остановился. В отчёте проверки — строка «Гибрид: отобрано абзацев…, переведено сильной моделью…».
+Работает и для `pdf-epub`.
 
 ### Где результат
 
@@ -321,7 +358,10 @@ Géron, AI Engineering, Pro Git, The API Book и `testbook`.
 | Что | Где |
 |---|---|
 | Модель и её параметры (слои на GPU, контекст, температура) | `config/ollama/Modelfile.rosetta` (EPUB), `config/ollama/Modelfile` (PDF), затем `docker compose up -d ollama-init` |
-| Другая модель для EPUB | `-e MODEL=translategemma-gpu` в команде `translate` / `pdf-epub` |
+| Режим «качество» / другая модель для EPUB | `-e MODEL=rosetta12-ru` / `-e MODEL=translategemma-gpu` в команде `translate` / `pdf-epub`; в интерфейсе — список «Режим (модель)» (translategemma там с 14.10 не показывается — она нужна пути PDF → PDF). Прерванный перевод продолжается только той же моделью |
+| Гибридный режим и доля текста для Rosetta-12B | `-e MODEL=hybrid -e HYBRID_SHARE=40`; в интерфейсе — режим `hybrid` и поле «% текста» |
+| Модель оценки ReMedy (квант, слои на GPU, выгрузка при простое) | сервис `remedy` в `docker-compose.yml` (`REMEDY_GGUF`, `REMEDY_NGL`, `REMEDY_IDLE`), затем `docker compose up -d remedy` |
+| Сколько слоёв Rosetta-12B держать в видеопамяти | `PARAMETER num_gpu` в `config/ollama/Modelfile.rosetta12` (23 — для 4 ГБ), затем `docker compose up -d ollama-init` |
 | Параметры pdf2zh (шрифт, промпт, разбиение на части) | `config/pdf2zh/config.v3.toml` |
 | Исправления терминов после перевода EPUB | `scripts/normalize_terms.py` |
 | Версии образов | `docker-compose.yml`, `docker/pdf/Dockerfile`, `docker/epub/Dockerfile` |
@@ -373,6 +413,7 @@ docker compose run --rm translate testbook.epub programming,ml,math
 [Ollama](https://github.com/ollama/ollama) (MIT),
 [bilingual_book_maker](https://github.com/yihong0618/bilingual_book_maker) (MIT),
 [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next) (AGPL-3.0),
+[llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT), модель оценки [ReMedy](https://github.com/Smu-Tan/Remedy) (Apache 2.0),
 [Docling](https://github.com/docling-project/docling-serve) (MIT), [pdfplumber](https://github.com/jsvine/pdfplumber) (MIT),
 модели TranslateGemma и YanoljaNEXT-Rosetta — [условия использования Gemma](https://ai.google.dev/gemma/terms).
 Переводите только книги, на перевод которых у вас есть права (например, для личного использования, если это допускает закон вашей страны).

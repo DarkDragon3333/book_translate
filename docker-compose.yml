@@ -5,6 +5,7 @@
 # PDF→PDF:  docker compose run --rm translate-pdf <книга.pdf>  [области глоссария]   (pdf2zh)
 # PDF GUI:  docker compose --profile pdf up -d   → http://127.0.0.1:7860
 # Интерфейс: docker compose --profile gui up -d  → http://127.0.0.1:8090 (EPUB и PDF → EPUB, очередь, прогресс)
+# Гибрид:   docker compose run --rm -e MODEL=hybrid -e HYBRID_SHARE=40 translate <книга.epub> [области]
 #
 # Все образы закреплены по digest: обновления не ломают проверенную систему.
 
@@ -45,8 +46,8 @@ services:
       retries: 30
     restart: unless-stopped
 
-  # Один раз при запуске: скачивает базовую модель (если её нет)
-  # и (пере)создаёт translategemma-gpu из config/ollama/Modelfile.
+  # Один раз при запуске: скачивает базовые модели (если их нет) и (пере)создаёт translategemma-gpu и rosetta-ru;
+  # rosetta12-ru (режим «качество») — только если её база уже скачана.
   ollama-init:
     image: *ollama_image
     container_name: ollama-init
@@ -69,6 +70,15 @@ services:
         ollama show $$ROSETTA >/dev/null 2>&1 || ollama pull $$ROSETTA
         ollama create rosetta-ru -f /config/ollama/Modelfile.rosetta
         echo "Модель rosetta-ru готова (модель по умолчанию для EPUB)"
+        # Режим «качество»: Rosetta-12B (7,1 ГБ, часть слоёв в ОЗУ, в ~6 раз медленнее). Сама не скачивается —
+        # иначе первый запуск ждал бы 7 ГБ, а интерфейс ждёт ollama-init. Установка — команда ниже, затем up -d ollama-init.
+        ROSETTA12=hf.co/yanolja/YanoljaNEXT-Rosetta-12B-2510-GGUF:IQ4_XS
+        if ollama show $$ROSETTA12 >/dev/null 2>&1; then
+          ollama create rosetta12-ru -f /config/ollama/Modelfile.rosetta12
+          echo "Модель rosetta12-ru готова (режим «качество»)"
+        else
+          echo "Режим «качество» не установлен: docker compose exec ollama ollama pull $$ROSETTA12 && docker compose up -d ollama-init"
+        fi
     restart: "no"
 
   # Конвейер перевода. Не запускается через up — только через run.
@@ -84,7 +94,8 @@ services:
     working_dir: /app
     environment:
       OLLAMA_URL: http://ollama:11434
-      MODEL: rosetta-ru               # 29.09: лучше translategemma-gpu по терминам и chrF; прежняя: -e MODEL=translategemma-gpu
+      MODEL: rosetta-ru               # быстрый режим; качество: -e MODEL=rosetta12-ru (в ~6 раз медленнее); гибрид: -e MODEL=hybrid; запасная: -e MODEL=translategemma-gpu
+      REMEDY_URL: http://remedy:8091  # гибрид: сервис оценки абзацев
       BBM_API_KEY: ollama             # Ollama ключ не проверяет, но bbm требует его для не-localhost адреса
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -113,6 +124,7 @@ services:
       DOCLING_URL: http://docling:5001
       OLLAMA_URL: http://ollama:11434
       MODEL: rosetta-ru
+      REMEDY_URL: http://remedy:8091
       BBM_API_KEY: ollama
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -142,6 +154,7 @@ services:
       DOCLING_URL: http://docling:5001
       OLLAMA_URL: http://ollama:11434
       MODEL: rosetta-ru
+      REMEDY_URL: http://remedy:8091
       BBM_API_KEY: ollama
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -151,6 +164,33 @@ services:
       - ./config:/config:ro
     stop_grace_period: 30s        # перевод останавливается аккуратно и продолжается кнопкой «Повторить»
     deploy:                       # только для nvidia-smi: строка состояния показывает загрузку GPU
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Гибридный режим: оценка абзацев моделью ReMedy-9B (llama-server из образа llama.cpp). Модель загружается
+  # в видеопамять только на время оценки книги (Ollama на это время выгружает свои) и выгружается сама.
+  # Файлы модели — models/remedy9b (готовит experiments/qe/remedy_local/prepare.py, см. README «Гибридный режим»);
+  # без них сервис работает, но гибрид недоступен.
+  remedy:
+    image: ghcr.io/ggml-org/llama.cpp:full-cuda@sha256:3d4d8201cc9d1e88227aab9a66ba696335ffa22ef94eb3e47377b2736c0bbec7
+    container_name: remedy
+    entrypoint: ["python3", "/scripts/remedy_server.py"]
+    environment:
+      REMEDY_DIR: /models/remedy9b
+      REMEDY_GGUF: remedy9b-Q5_K_M.gguf   # рабочий квант (13.10: точность как у Q6_K, скорость как у Q4_K_M)
+      REMEDY_NGL: "17"                    # слоёв на GPU из 41 (~3,9 ГБ видеопамяти)
+      REMEDY_THREADS: "6"
+      REMEDY_IDLE: "120"                  # выгрузить модель после 2 минут простоя
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./models:/models:ro
+      - ./scripts:/scripts:ro
+    deploy:
       resources:
         reservations:
           devices:

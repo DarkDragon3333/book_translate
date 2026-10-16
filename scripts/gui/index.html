@@ -20,7 +20,8 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap;
+         position: sticky; top: 0; z-index: 20; }   /* меню всегда видно при прокрутке (14.10) */
 header h1 { font-size: 17px; margin: 0; font-weight: 600; }
 .sys { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; align-items: center; }
 .chip { padding: 3px 9px; border-radius: 999px; font-size: 12px; background: var(--code); color: var(--muted); white-space: nowrap; }
@@ -39,9 +40,9 @@ header h1 { font-size: 17px; margin: 0; font-weight: 600; }
 /* широкий экран: книги | форма | работа. Список книг — во всю высоту окна, прокручивается сам */
 main { display: grid; gap: 16px; padding: 16px 20px; align-items: start;
        grid-template-columns: 290px minmax(320px, 390px) 1fr; grid-template-areas: "books form status"; }
-.bookscol { grid-area: books; position: sticky; top: 16px; align-self: start; }
+.bookscol { grid-area: books; position: sticky; top: calc(var(--hdr, 50px) + 16px); align-self: start; }
 .formcol { grid-area: form; } .statuscol { grid-area: status; }
-.bookscol section.books { height: calc(100vh - 100px); min-height: 300px; display: flex; flex-direction: column; margin-bottom: 0; }
+.bookscol section.books { height: calc(100vh - var(--hdr, 50px) - 50px); min-height: 300px; display: flex; flex-direction: column; margin-bottom: 0; }
 #books { overflow-y: auto; flex: 1; margin: 0 -6px; padding: 0 6px; }
 .book { display: block; padding: 6px 8px; border-radius: 7px; cursor: pointer; border: 1px solid transparent; }
 .book:hover { background: var(--code); }
@@ -107,7 +108,24 @@ input[type=number] { width: 90px; }
 .checks .n { color: var(--muted); font-size: 12px; margin-left: auto; }
 .checks .why { color: var(--muted); font-size: 11.5px; margin: -2px 0 5px 24px; line-height: 1.35; }
 .checks .why.off { color: var(--warn); }
-#glosshint.ok { color: var(--text); }
+#help-modes { scroll-margin-top: calc(var(--hdr, 50px) + 12px); }
+/* подбор глоссариев: заметная строка со значком ожидания (14.10) */
+.detect { display: flex; gap: 8px; align-items: center; font-size: 13.5px; padding: 7px 10px; border-radius: 7px; margin: 4px 0 6px;
+          background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.detect.ok { background: var(--ok-soft); color: var(--ok); font-weight: 400; }
+.detect.ok b { font-weight: 600; }
+.spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; flex: none;
+        animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.rowhead { display: flex; align-items: center; gap: 8px; margin: 12px 0 5px; }
+.rowhead .row { margin: 0; }
+.rowhead button { margin-left: auto; }
+.glsum { font-size: 13px; padding: 2px 0 4px; }
+.glsum b { font-weight: 600; }
+a.more { color: var(--accent); cursor: pointer; text-decoration: none; white-space: nowrap; }
+a.more:hover { text-decoration: underline; }
+button.x { padding: 1px 8px; font-size: 12px; color: var(--muted); }
+button.x:hover { color: var(--bad); border-color: var(--bad); }
 .chapters { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; }
 .chapters label { display: flex; gap: 8px; padding: 2px 0; font-size: 13px; user-select: none; -webkit-user-select: none; }
 .chapters .f { color: var(--muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
@@ -212,14 +230,24 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
       </div>
       <label class="check" id="enonlyrow" hidden><input type="checkbox" id="enonly"> Только разметить PDF, без перевода</label>
 
-      <div class="row">Глоссарии</div>
-      <div class="checks" id="gloss"></div>
-      <div class="hint" id="glosshint"></div>
-      <div class="hint" id="glossbase"></div>
+      <div class="rowhead"><span class="row">Глоссарии</span>
+        <button class="small" type="button" id="glosstoggle" title="Показать или скрыть список глоссариев">Скрыть</button></div>
+      <div class="detect" id="glossdetect" hidden></div>
+      <div class="glsum" id="glosssum" hidden></div>
+      <div id="glossbody">
+        <div class="checks" id="gloss"></div>
+        <div class="hint" id="glossbase"></div>
+      </div>
       <div class="hint" id="bookgloss"></div>
 
-      <label class="row" for="model">Модель</label>
+      <label class="row" for="model">Режим (модель)</label>
       <select id="model"></select>
+      <div id="sharerow" hidden>
+        <div class="inline" style="margin-top:8px;flex-wrap:nowrap">
+          <span>Модель «качество» для</span><input type="number" id="share" min="5" max="80" step="5" value="40" style="width:70px"><span>% текста</span>
+        </div>
+      </div>
+      <div class="hint" id="modelhint"></div>
 
       <button class="primary" id="start">Поставить в очередь</button>
       <div class="err" id="err"></div>
@@ -280,9 +308,10 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <li>Скопируйте книгу в папку <code>source</code>. Открыть её можно из меню значка в трее: «Папка с книгами».</li>
     <li>Выберите книгу в списке «Книги».</li>
     <li>Укажите, что переводить: всю книгу, отдельные главы или диапазон страниц (только для PDF).</li>
-    <li>Дождитесь автоопределения глоссариев: надпись «Подбираю глоссарии по тексту книги…» сменится на
-      «Подобрано по тексту книги: …» и галочки встанут сами (у большой книги — до минуты). Если поставить задачу раньше,
-      в перевод попадут только те области, которые отмечены в этот момент.</li>
+    <li>Дождитесь автоопределения глоссариев: синяя строка со значком ожидания «Подбираю глоссарии по тексту книги…»
+      сменится на зелёную «Подобрано по тексту книги: …», и галочки встанут сами (обычно несколько секунд). Если поставить
+      задачу раньше, в перевод попадут только те области, которые отмечены в этот момент. Список глоссариев можно свернуть
+      кнопкой «Скрыть» — останется строка с подключаемыми словарями.</li>
     <li>Проверьте глоссарии и при необходимости измените галочки.</li>
     <li>Нажмите «Поставить в очередь». Ход работы показан в разделе «Сейчас».</li>
   </ol>
@@ -290,7 +319,7 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <tr><th>Вкладка</th><th>Назначение</th></tr>
     <tr><td>Перевод</td><td>Список книг, параметры перевода, текущая задача и очередь.</td></tr>
     <tr><td>Просмотр</td><td>Оригинал и перевод главы рядом. Прокрутка обеих сторон синхронна.</td></tr>
-    <tr><td>История</td><td>Завершённые задачи, их файлы и логи. Кнопка «Очистить историю» удаляет записи, книги остаются.</td></tr>
+    <tr><td>История</td><td>Завершённые задачи, их файлы и логи. Кнопка ✕ у записи удаляет её, «Очистить историю» — все записи; книги и переводы остаются.</td></tr>
   </table>
   <p>Скорость — около 1,5 секунды на абзац, книга в 700 страниц переводится примерно за 3 часа.
   PDF перед переводом размечается (программа Docling), на 700 страниц это ещё около 15 минут. Docling включается сам,
@@ -310,17 +339,30 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <tr><td>Глоссарии</td><td>Словари терминов. Общий словарь <code>base</code> подключается всегда. Области
       (<code>programming</code>, <code>distributed</code>, <code>security</code>, <code>ml</code>, <code>math</code>,
       <code>devops</code>, <code>web</code>, <code>lowlevel</code>, <code>gamedev</code>) приложение
-      подбирает само по тексту книги, когда книга выбрана (у большой книги — до минуты). Ставить книгу в очередь стоит
+      подбирает само по тексту книги, когда книга выбрана (обычно несколько секунд). Ставить книгу в очередь стоит
       после подбора, иначе области не подключатся. Галочки можно изменить.
       Под каждой отмеченной областью показаны её частые слова в этой книге и их перевод: он будет применён во всей книге.
       Жёлтая строка — область не похожа на тему книги, и её слова, скорее всего, здесь значат другое
       (например, <code>feature</code> в книге по Java — не «признак»). Словарь отдельной книги —
       файл <code>source/&lt;имя книги&gt;.glossary.csv</code>, он подключается автоматически и главнее областей.</td></tr>
-    <tr><td>Модель</td><td><code>rosetta-ru</code> (YanoljaNEXT-Rosetta-4B) — модель по умолчанию. Обучена переводить с глоссарием;
-      в сравнительных тестах точнее соблюдает термины и пишет более естественным языком.<br>
-      <code>translategemma-gpu</code> (Google TranslateGemma-4B) — вторая модель с другим характером ошибок. Её стоит выбрать,
-      если <code>rosetta-ru</code> плохо справляется с конкретной книгой: путает смысл, оставляет абзацы на английском
-      или портит разметку. Повторный перевод заменяет прежний результат.</td></tr>
+    <tr id="help-modes"><td>Режим (модель)</td><td><code>rosetta-ru</code> (YanoljaNEXT-Rosetta-4B) — быстрый режим, модель по умолчанию. Обучена переводить с глоссарием;
+      целиком помещается в видеопамять: глава — около 10 минут.<br>
+      <code>rosetta12-ru</code> (YanoljaNEXT-Rosetta-12B) — режим «качество». Та же модель, но втрое больше: ошибок смысла
+      примерно в 3 раза меньше, термины склоняет правильно, в слепом сравнении выиграла 10 : 4. Не помещается в видеопамять,
+      часть работает в оперативной памяти, поэтому в ~6 раз медленнее: книга на 700 страниц — около 16 часов, удобно на ночь.
+      Шкала GPU при этом не желтеет — так и задумано. Установка (один раз, 7 ГБ), в PowerShell из <code>C:\book_translate</code>:<br>
+      <code>docker.exe compose exec ollama ollama pull hf.co/yanolja/YanoljaNEXT-Rosetta-12B-2510-GGUF:IQ4_XS</code><br>
+      <code>docker.exe compose up -d ollama-init</code><br>
+      Прерванный перевод продолжается только той же моделью; при смене модели приложение предложит начать заново.<br>
+      <code>hybrid</code> — гибрид: <code>rosetta-ru</code> переводит всю книгу, модель оценки ReMedy-9B отмечает худшие абзацы
+      (сначала — с несуществующими словами и сбоями меток), и <code>rosetta12-ru</code> переводит их заново. Поле «% текста» —
+      сколько текста книги отдать модели «качество» (5–80%, по умолчанию 40). Больше — ближе к качеству, но дольше:
+      время ≈ 1,5 + доля × 6,5 от быстрого режима (замер 14.10: 40% — около 4×, 20% — около 2,8×, качество целиком — 5,6×). На проверке двумя свежими главами
+      40% текста исправили ~83% ошибок смысла быстрой модели, 20% — ~56%. Гладкие ошибки (неверный, но правдоподобный
+      термин) ReMedy замечает плохо. Нужны режим «качество» и модель ReMedy (один раз, см. README, «Гибридный режим»).
+      Пока ReMedy оценивает абзацы, модели Ollama выгружены — это нормально. Ход трёх проходов показан в «Сейчас»:
+      «Гибрид 1/3, быстрая модель», «2/3, оценка ReMedy», «3/3, модель «качество»».<br>
+      Повторный перевод другим режимом заменяет прежний результат.</td></tr>
   </table>
 
   <h3>Состояния книг</h3>
@@ -375,7 +417,7 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
       <code>books/&lt;имя книги&gt;_epub</code> для PDF (пробные прогоны страниц — <code>…_epub_p&lt;страницы&gt;</code>).
       Книга останется в списке как «не начата». Для PDF вместе с папкой удаляется и разметка: следующий перевод разметит книгу заново.</td></tr>
     <tr><td>Книгу из списка</td><td>Удалите файл книги из папки <code>source</code> (и её словарь <code>&lt;имя книги&gt;.glossary.csv</code>, если есть).</td></tr>
-    <tr><td>Записи истории</td><td>Кнопка «Очистить историю» во вкладке «История». Книги и переводы остаются.</td></tr>
+    <tr><td>Записи истории</td><td>Во вкладке «История»: кнопка ✕ у записи или «Очистить историю» для всех. Книги и переводы остаются.</td></tr>
     <tr><td>Приложение целиком</td><td>
       <ol>
         <li>Сохраните нужные книги из <code>source</code> и переводы из <code>books</code> в другое место.</li>
@@ -433,7 +475,7 @@ async function api(path, opts) {
   const r = await fetch(path, Object.assign({signal: AbortSignal.timeout(30000)}, opts || {}));
   const ct = r.headers.get('content-type') || '';
   const data = ct.includes('json') ? await r.json() : await r.text();
-  if (!r.ok) throw new Error(data.error || data || r.status);
+  if (!r.ok) throw Object.assign(new Error(data.error || data || r.status), {data});
   return data;
 }
 const fmtTime = t => t ? new Date(t * 1000).toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) : '';
@@ -517,27 +559,43 @@ $('#chall').onclick = () => { $('#chapters').querySelectorAll('input').forEach(i
 $('#chnone').onclick = () => { $('#chapters').querySelectorAll('input').forEach(i => i.checked = false); chHint(); };
 // ---------- подсказка областей глоссария по тексту книги ----------
 let DETECT = null, glossTouched = false, detectTimer = null;
+function setDetect(state, html) {
+  const el = $('#glossdetect');
+  el.hidden = !state;
+  el.className = 'detect' + (state === 'ok' ? ' ok' : '');
+  el.innerHTML = state === 'wait' ? '<span class="spin"></span><span>Подбираю глоссарии по тексту книги…</span>' : (html || '');
+}
 async function loadDetect(book) {
   clearTimeout(detectTimer);
-  $('#glosshint').className = 'hint';
-  $('#glosshint').textContent = 'Подбираю глоссарии по тексту книги…';
+  setDetect('wait');
   renderGlossNotes();
   let d;
   try { d = await api('/api/detect/' + encodeURIComponent(book)); }
-  catch (e) { if (book === shownBook) $('#glosshint').textContent = ''; return; }
+  catch (e) { if (book === shownBook) setDetect(''); return; }
   if (book !== shownBook) return;                   // пока считали, выбрали другую книгу
-  if (d.status !== 'ready') { detectTimer = setTimeout(() => loadDetect(book), 3000); return; }
+  if (d.status !== 'ready') { detectTimer = setTimeout(() => loadDetect(book), 2000); return; }
   DETECT = d;
   if (!glossTouched) $('#gloss').querySelectorAll('input').forEach(i => i.checked = d.suggest.includes(i.value));
-  $('#glosshint').className = 'hint ok';
-  $('#glosshint').textContent = d.suggest.length
-    ? `Подобрано по тексту книги: ${d.suggest.join(', ')}.` + (glossTouched ? ' Галочки не менялись: вы уже выбрали сами.' : '')
-    : 'По тексту книги подходит только общий словарь base.';
+  setDetect('ok', d.suggest.length
+    ? `Подобрано по тексту книги: <b>${esc(d.suggest.join(', '))}</b>` + (glossTouched ? ' (галочки не менялись: вы уже выбрали сами)' : '')
+    : 'По тексту книги подходит только общий словарь <b>base</b>');
   renderGlossNotes();
 }
+// Список глоссариев можно свернуть: остаётся строка с выбранными (состояние запоминается)
+let glossOpen = true;
+try { glossOpen = localStorage.getItem('glossOpen') !== '0'; } catch (_) {}
+function renderGlossFold() {
+  $('#glossbody').hidden = !glossOpen;
+  $('#glosstoggle').textContent = glossOpen ? 'Скрыть' : 'Показать';
+  const sel = [...$('#gloss').querySelectorAll('input:checked')].map(i => i.value);
+  $('#glosssum').hidden = glossOpen;
+  $('#glosssum').innerHTML = 'Подключатся: <b>base' + (sel.length ? ', ' + esc(sel.join(', ')) : '') + '</b>';
+}
+$('#glosstoggle').onclick = () => { glossOpen = !glossOpen; try { localStorage.setItem('glossOpen', glossOpen ? '1' : '0'); } catch (_) {} renderGlossFold(); };
 function renderGlossNotes() {
   // под каждой отмеченной областью — её частые однословные термины в этой книге: их перевод будет навязан везде
   $('#gloss').querySelectorAll('.why').forEach(e => e.remove());
+  renderGlossFold();
   if (!DETECT) return;
   $('#gloss').querySelectorAll('label').forEach(l => {
     const cb = l.querySelector('input'), x = DETECT.domains[cb.value];
@@ -560,14 +618,38 @@ function renderOptions() {
   if (DETECT && !glossTouched) $('#gloss').querySelectorAll('input').forEach(i => i.checked = DETECT.suggest.includes(i.value));
   renderGlossNotes();
   $('#glossbase').textContent = `Общий словарь base (${plural(base ? base.terms : 0, 'термин', 'термина', 'терминов')}) подключается всегда.`;
-  $('#model').innerHTML = OPTS.models.map(m => `<option ${m === OPTS.default_model ? 'selected' : ''}>${esc(m)}</option>`).join('');
+  const info = OPTS.model_info || {}, keep = $('#model').value, h = OPTS.hybrid || {};
+  if (h.min) { $('#share').min = h.min; $('#share').max = h.max; }
+  try { const v = localStorage.getItem('hybridShare'); if (v) $('#share').value = v; else if (h.default) $('#share').value = h.default; }
+  catch (_) { if (h.default) $('#share').value = h.default; }
+  $('#model').innerHTML = OPTS.models.map(m =>
+    `<option value="${esc(m)}" ${m === (keep || OPTS.default_model) ? 'selected' : ''}>${esc(m)}${info[m] ? ' — ' + esc(info[m]) : ''}</option>`).join('');
+  renderModelHint();
 }
+// Подсказка под выбором модели — одна строка; подробности — в «Помощи» (14.10)
+function renderModelHint() {
+  const m = $('#model').value, q = OPTS.quality_model, h = OPTS.hybrid || {};
+  let t = '';
+  $('#sharerow').hidden = m !== 'hybrid';
+  if (m === 'hybrid') {
+    const sh = Math.max(h.min || 5, Math.min(h.max || 80, +$('#share').value || h.default || 40));
+    t = `Время — около ${(1.5 + sh / 100 * 6.5).toFixed(1).replace('.', ',')}× от быстрого режима.`;
+  }
+  else if (q && m === q) t = 'В ~6 раз медленнее быстрого режима: удобно на ночь.';
+  else if (m === 'rosetta-ru') t = 'Глава — около 10 минут.';
+  if (!OPTS.models.includes('hybrid') && h.why) t += (t ? ' ' : '') + 'Гибрид недоступен: ' + h.why + '.';
+  $('#modelhint').innerHTML = esc(t) + ' <a class="more" id="modelmore">Подробнее о режимах</a>';
+  $('#modelmore').onclick = () => { showTab('help'); const el = document.getElementById('help-modes'); if (el) el.scrollIntoView({block: 'start'}); };
+}
+$('#model').addEventListener('change', renderModelHint);
+$('#share').addEventListener('input', () => { try { localStorage.setItem('hybridShare', $('#share').value); } catch (_) {} renderModelHint(); });
 $('#start').onclick = async () => {
   $('#err').textContent = '';
   const b = BOOKS.find(x => x.file === $('#book').value);
   if (!b) return;
   const body = {book: b.file, model: $('#model').value,
                 domains: [...$('#gloss').querySelectorAll('input:checked')].map(i => i.value)};
+  if (body.model === 'hybrid') body.share = +$('#share').value;
   const markupOnly = b.ext === 'pdf' && $('#enonly').checked;
   if (scope === 'chapters' && !markupOnly) {       // разметка PDF — всегда всей книги, главы для неё не нужны
     body.only = [...$('#chapters').querySelectorAll('input:checked')].map(i => i.value);
@@ -576,14 +658,26 @@ $('#start').onclick = async () => {
   if (scope === 'pages') body.pages = `${$('#pfrom').value}-${$('#pto').value}`;
   if (b.ext === 'pdf') body.en_only = $('#enonly').checked;
   try { await api('/api/jobs', {method: 'POST', body: JSON.stringify(body)}); refresh(); }
-  catch (e) { $('#err').textContent = e.message; }
+  catch (e) {
+    const c = e.data && e.data.conflict;
+    if (!c) { $('#err').textContent = e.message; return; }
+    // прерванный перевод другой моделью: bbm его не продолжит — продолжить прежней моделью или начать заново
+    if (!confirm(`Перевод этой книги прерван на модели ${c.prev}. Его можно продолжить только этой моделью.\n\n` +
+                 `OK — начать заново моделью ${c.model} (уже переведённое моделью ${c.prev} будет потеряно).\n` +
+                 `Отмена — ничего не менять (выберите ${c.prev}, чтобы продолжить).`)) { $('#err').textContent = e.message; return; }
+    try { await api('/api/jobs', {method: 'POST', body: JSON.stringify(Object.assign(body, {fresh: true}))}); refresh(); }
+    catch (e2) { $('#err').textContent = e2.message; }
+  }
 };
 
 // ---------- задачи ----------
+function modelLabel(j) {
+  return j.model === 'hybrid' ? 'гибрид' + (j.share ? ` ${j.share}%` : '') : j.model;
+}
 function describe(j) {
   const kind = j.mode === 'pdf-epub' ? 'PDF → EPUB' : j.mode === 'pdf' ? 'PDF → PDF' : 'EPUB';
-  if (j.external) return ['запущен командой в PowerShell (лог и Ctrl+C — в том окне)', kind, j.model].filter(Boolean).join(' · ');
-  const parts = [kind, j.model];
+  if (j.external) return ['запущен командой в PowerShell (лог и Ctrl+C — в том окне)', kind, modelLabel(j)].filter(Boolean).join(' · ');
+  const parts = [kind, modelLabel(j)];
   if (j.pages) parts.push('стр. ' + j.pages);
   if (j.only.length) parts.push(plural(j.only.length, 'глава', 'главы', 'глав'));
   if (j.en_only) parts.push('только разметка');
@@ -597,12 +691,12 @@ function files(j) {
 function jobActions(j) {
   const a = [];
   if (j.external) {          // перевод, запущенный командой: остановить и повторить можно только там же
-    if ((j.model || '').startsWith('rosetta')) a.push(`<button class="small" data-pairs="${j.id}">Абзацы</button>`);
+    if ((j.model || '').startsWith('rosetta') || j.model === 'hybrid') a.push(`<button class="small" data-pairs="${j.id}">Абзацы</button>`);
     return `<span class="actions">${a.join('')}</span>`;
   }
   if (j.status === 'running' || j.status === 'queued') a.push(`<button class="small danger" data-stop="${j.id}">${j.status === 'running' ? 'Стоп' : 'Убрать'}</button>`);
   if (['failed','stopped','interrupted','cancelled','done'].includes(j.status)) a.push(`<button class="small" data-retry="${j.id}">${j.status === 'done' ? 'Ещё раз' : 'Повторить'}</button>`);
-  if (j.model.startsWith('rosetta') && j.status !== 'queued' && !j.en_only) a.push(`<button class="small" data-pairs="${j.id}">Абзацы</button>`);
+  if ((j.model.startsWith('rosetta') || j.model === 'hybrid') && j.status !== 'queued' && !j.en_only) a.push(`<button class="small" data-pairs="${j.id}">Абзацы</button>`);
   return `<span class="actions">${a.join('')}</span>`;
 }
 // Текущая задача: карточка строится один раз, дальше меняются только числа — без перерисовки и прыжков
@@ -626,7 +720,11 @@ function renderCurrent(j) {
     </div>`;
     $('#logbox').addEventListener('toggle', e => { try { localStorage.setItem('logOpen', e.target.open ? '1' : '0'); } catch (_) {} if (e.target.open) loadLog(j.id); });
   }
-  const p = j.progress || {}, ci = list.indexOf(p.stage);
+  const p = j.progress || {}, hyb = (p.stage || '').startsWith('Гибрид'), ci = list.indexOf(hyb ? 'Перевод' : p.stage);
+  // гибрид: три прохода внутри этапа «Перевод»
+  const what = p.stage === 'Гибрид: отбор абзацев' ? 'Гибрид 2/3, оценка ReMedy'
+             : p.stage === 'Гибрид: перевод отобранных' ? 'Гибрид 3/3, модель «качество»'
+             : j.model === 'hybrid' && p.stage === 'Перевод' ? 'Гибрид 1/3, быстрая модель' : 'Перевод';
   let pct = 0, line = p.stage || 'запуск…';
   if (p.stage === 'Разметка Docling' && p.docling) {
     pct = 100 * p.docling[0] / p.docling[1];
@@ -634,10 +732,10 @@ function renderCurrent(j) {
   } else if (p.total && p.done != null && p.over) {
     // своя оценка числа абзацев занижена (запуск командой — точного числа из лога bbm нет)
     pct = 99;
-    line = `Перевод: ${p.done} абзацев — больше оценки ~${p.total}, скоро конец` + (p.per_min ? ` · ${p.per_min} в минуту` : '');
+    line = `${what}: ${p.done} абзацев — больше оценки ~${p.total}, скоро конец` + (p.per_min ? ` · ${p.per_min} в минуту` : '');
   } else if (p.total && p.done != null) {
     pct = Math.min(100, 100 * p.done / p.total);
-    line = `Перевод: ${p.done} из ${p.exact ? '' : '~'}${p.total} абзацев` + (p.per_min ? ` · ${p.per_min} в минуту` : '') + (p.eta_min != null ? ` · осталось ~${fmtDur(p.eta_min * 60)}` : '');
+    line = `${what}: ${p.done} из ${p.exact || hyb ? '' : '~'}${p.total} абзацев` + (p.per_min ? ` · ${p.per_min} в минуту` : '') + (p.eta_min != null ? ` · осталось ~${fmtDur(p.eta_min * 60)}` : '');
   } else if (ci >= 0) pct = 100 * ci / list.length;
   $('#curdur').textContent = 'идёт ' + fmtDur(Date.now() / 1000 - j.started);
   $('#curbar').style.width = pct.toFixed(1) + '%';
@@ -656,14 +754,14 @@ async function loadLog(id) {
   } catch (_) {}
 }
 const listSig = {};
-function renderList(sel, list, empty) {
+function renderList(sel, list, empty, deletable) {
   // список перерисовывается только когда в нём что-то поменялось (статус, заметка, файлы)
   const sig = JSON.stringify(list.map(j => [j.id, j.status, j.note, (j.outputs || []).map(o => o.name + o.size)]));
   if (listSig[sel] === sig) return;
   listSig[sel] = sig;
   const open = new Set([...document.querySelectorAll(`${sel} details[open] pre`)].map(p => p.dataset.log));
   $(sel).innerHTML = list.length ? list.map(j => `<div class="job">
-    <div class="top"><span class="title">${esc(j.book)}</span><span class="status ${j.status}">${STATUS[j.status] || j.status}</span>${jobActions(j)}</div>
+    <div class="top"><span class="title">${esc(j.book)}</span><span class="status ${j.status}">${STATUS[j.status] || j.status}</span>${jobActions(j)}${deletable ? `<button class="x" data-del="${j.id}" title="Удалить запись из истории (книга и переводы останутся)">✕</button>` : ''}</div>
     <div class="meta">${esc(describe(j))}</div>
     <div class="meta">${fmtTime(j.created)}${j.started && j.finished ? ' · заняло ' + fmtDur(j.finished - j.started) : ''}</div>
     ${j.note ? `<div class="note">${esc(j.note)}</div>` : ''}
@@ -705,7 +803,7 @@ async function refresh() {
     if (sig !== lastSig) { lastSig = sig; refreshBooks(); }      // задача началась/закончилась — обновить список книг
     renderCurrent(jobs.find(j => j.status === 'running'));
     renderList('#queue', jobs.filter(j => j.status === 'queued').reverse(), 'Пусто.');
-    renderList('#history', jobs.filter(j => !['queued','running'].includes(j.status)).slice(0, 30), 'Пока ничего.');
+    renderList('#history', jobs.filter(j => !['queued','running'].includes(j.status)).slice(0, 30), 'Пока ничего.', true);
   } catch (e) { curId = null; $('#current').innerHTML = `<div class="err">Нет связи с интерфейсом: ${esc(e.message)}</div>`; }
 }
 let booksSig = '';
@@ -737,7 +835,9 @@ async function refreshStatus() {
   if (g.mem_total) tip.push(`видеопамять ${gb(g.mem_used)} из ${gb(g.mem_total)}`);
   let lvl = '';
   if (s.ollama === null) { lvl = 'bad'; tip.push('Ollama не отвечает — перевод невозможен'); }
+  else if (!m && s.remedy_loaded) tip.push('гибрид: видеопамять занята ReMedy — идёт оценка абзацев');
   else if (!m) tip.push('модель не загружена, загрузится при запуске перевода');
+  else if (m.gpu < 100 && OPTS && mname === OPTS.quality_model) tip.push(`модель ${mname} частично в оперативной памяти — так и задумано (режим «качество»)`);
   else if (m.gpu < 100) { lvl = 'warn'; tip.push(`модель ${mname} только на ${m.gpu}% в видеопамяти — перевод идёт в несколько раз медленнее; закройте программы, которые используют GPU`); }
   else tip.push(`модель ${mname} целиком в видеопамяти`);
   meter('#s-gpu', g.pct ?? null, lvl, tip.join(' · '));
@@ -756,6 +856,7 @@ document.addEventListener('click', async e => {
       await api(`/api/jobs/${t.dataset.retry}/retry`, {method: 'POST'}); refresh();
     }
     if (t.dataset.pairs) openPairs(t.dataset.pairs);
+    if (t.dataset.del) { await api(`/api/jobs/${t.dataset.del}/delete`, {method: 'POST'}); listSig['#history'] = null; refresh(); }
   } catch (err) { alert(err.message); }
 });
 
@@ -860,6 +961,9 @@ function showTab(t) {
   try { localStorage.setItem('tab', t); } catch (_) {}
 }
 document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+// высота закреплённого меню — для отступов списка книг и переходов к разделам «Помощи»
+const setHdr = () => document.documentElement.style.setProperty('--hdr', document.querySelector('header').offsetHeight + 'px');
+window.addEventListener('resize', setHdr); setHdr();
 (async () => {
   try { showTab(localStorage.getItem('tab') || 'work'); } catch (_) {}
   try { OPTS = await api('/api/options'); renderOptions(); } catch (e) { $('#err').textContent = e.message; }

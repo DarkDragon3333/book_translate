@@ -179,9 +179,19 @@ def lookup(smap, k, _idx={}):
         idx = _idx[id(smap)] = {}
         for kk in smap:
             idx.setdefault(kk[:40], []).append(kk)
-    for kk in idx.get(k[:40], []):
+    cands = idx.get(k[:40], [])
+    for kk in cands:
         if kk.startswith(k) or k.startswith(kk):
             return smap[kk]
+    # ссылки ⟦a⟧ после начала абзаца: в EPUB их текст есть, в запросе bbm — только метка, ключи расходятся.
+    # Подходит абзац с тем же началом, из ключа которого получается наш выбрасыванием букв текста ссылок
+    # (13.10: 6 из 328 абзацев гл. 10 Géron не находились). Только если такой абзац один.
+    def inside(a, b):
+        it = iter(b)
+        return all(c in it for c in a)
+    hits = [kk for kk in cands if len(k) < len(kk) <= len(k) + 400 and inside(k, kk)]
+    if len(hits) == 1:
+        return smap[hits[0]]
     return None
 
 
